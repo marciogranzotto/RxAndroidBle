@@ -1,8 +1,8 @@
 package com.polidea.rxandroidble;
 
+import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
-import android.content.Context;
 import android.os.Build;
 import android.support.annotation.NonNull;
 import android.support.annotation.RequiresApi;
@@ -13,11 +13,13 @@ import com.polidea.rxandroidble.exceptions.BleConflictingNotificationAlreadySetE
 import com.polidea.rxandroidble.exceptions.BleGattCannotStartException;
 import com.polidea.rxandroidble.exceptions.BleGattException;
 import com.polidea.rxandroidble.exceptions.BleGattOperationType;
+import com.polidea.rxandroidble.internal.connection.RxBleGattCallback;
 
 import java.util.UUID;
-
 import java.util.concurrent.TimeUnit;
+
 import rx.Observable;
+import rx.Scheduler;
 
 /**
  * The BLE connection handle, supporting GATT operations. Operations are enqueued and the library makes sure that they are not
@@ -27,7 +29,7 @@ public interface RxBleConnection {
 
     interface Connector {
 
-        Observable<RxBleConnection> prepareConnection(Context context, boolean autoConnect);
+        Observable<RxBleConnection> prepareConnection(boolean autoConnect);
     }
 
     class RxBleConnectionState {
@@ -46,6 +48,80 @@ public interface RxBleConnection {
         public String toString() {
             return "RxBleConnectionState{" + description + '}';
         }
+    }
+
+    /**
+     * The interface of a {@link com.polidea.rxandroidble.internal.operations.RxBleRadioOperationCharacteristicLongWrite} builder.
+     */
+    interface LongWriteOperationBuilder {
+
+        /**
+         * Setter for a byte array to write
+         * This function MUST be called prior to {@link #build()}
+         *
+         * @param bytes the bytes to write
+         * @return the LongWriteOperationBuilder
+         */
+        LongWriteOperationBuilder setBytes(byte[] bytes);
+
+        /**
+         * Setter for a {@link UUID} of the {@link BluetoothGattCharacteristic} to write to
+         * This function or {@link #setCharacteristic(BluetoothGattCharacteristic)} MUST be called prior to {@link #build()}
+         *
+         * @param uuid the UUID
+         * @return the LongWriteOperationBuilder
+         */
+        LongWriteOperationBuilder setCharacteristicUuid(UUID uuid);
+
+        /**
+         * Setter for a {@link BluetoothGattCharacteristic} to write to
+         * This function or {@link #setCharacteristicUuid(UUID)} MUST be called prior to {@link #build()}
+         *
+         * @param bluetoothGattCharacteristic the BluetoothGattCharacteristic
+         * @return the LongWriteOperationBuilder
+         */
+        LongWriteOperationBuilder setCharacteristic(BluetoothGattCharacteristic bluetoothGattCharacteristic);
+
+        /**
+         * Setter for a maximum size of a byte array that may be write at once
+         * If this is not specified - the default value of the connection's MTU is used
+         *
+         * @param maxBatchSize the maximum size of a byte array to write at once
+         * @return the LongWriteOperationBuilder
+         */
+        LongWriteOperationBuilder setMaxBatchSize(int maxBatchSize);
+
+        /**
+         * Setter for a strategy used to mark batch write completed. Only after previous batch has finished, the next (if any left) can be
+         * written.
+         * If this is not specified - the next batch of bytes is written right after the previous one has finished.
+         *
+         * A bytes batch is a part (slice) of the original byte array to write. Imagine a byte array of {0, 1, 2, 3, 4} where the maximum
+         * number of bytes that may be transmitted at once is 2. Then the original byte array will be transmitted in three batches:
+         * {0, 1}, {2, 3}, {4}
+         *
+         * It is expected that the Observable returned from the writeOperationAckStrategy will emit exactly the same events as the source,
+         * however you may delay them at your pace.
+         *
+         * @param writeOperationAckStrategy the function that acknowledges writing of the batch of bytes. It takes
+         *                                  an {@link Observable<Boolean>} that emits a value each time the byte array batch
+         *                                  has finished to write. {@link Boolean#TRUE} means that there are more items in the buffer,
+         *                                  {@link Boolean#FALSE} otherwise. If you want to delay the next batch use provided observable
+         *                                  and add some custom behavior (delay, waiting for a message from the device, etc.)
+         * @return the LongWriteOperationBuilder
+         */
+        LongWriteOperationBuilder setWriteOperationAckStrategy(WriteOperationAckStrategy writeOperationAckStrategy);
+
+        /**
+         * Build function for the long write
+         *
+         * @return the Observable which will queue the long write on subscription.
+         */
+        Observable<byte[]> build();
+    }
+
+    interface WriteOperationAckStrategy extends Observable.Transformer<Boolean, Boolean> {
+
     }
 
     /**
@@ -83,6 +159,16 @@ public interface RxBleConnection {
     Observable<RxBleDeviceServices> discoverServices(long timeout, TimeUnit timeUnit);
 
     /**
+     * @see #setupNotification(UUID, NotificationSetupMode)  with default setup mode.
+     */
+    Observable<Observable<byte[]>> setupNotification(@NonNull UUID characteristicUuid);
+
+    /**
+     * @see #setupNotification(BluetoothGattCharacteristic, NotificationSetupMode) with default setup mode.
+     */
+    Observable<Observable<byte[]>> setupNotification(@NonNull BluetoothGattCharacteristic characteristic);
+
+    /**
      * Setup characteristic notification in order to receive callbacks when given characteristic has been changed. Returned observable will
      * emit Observable<byte[]> once the notification setup has been completed. It is possible to setup more observables for the same
      * characteristic and the lifecycle of the notification will be shared among them.
@@ -93,13 +179,14 @@ public interface RxBleConnection {
      * the notification will not be set up and will emit an BleCharacteristicNotificationOfOtherTypeAlreadySetException
      *
      * @param characteristicUuid Characteristic UUID for notification setup.
+     * @param setupMode Configures how the notification is set up. For available modes see {@link NotificationSetupMode}.
      * @return Observable emitting another observable when the notification setup is complete.
      * @throws BleCharacteristicNotFoundException              if characteristic with given UUID hasn't been found.
      * @throws BleCannotSetCharacteristicNotificationException if setup process notification setup process fail. This may be an internal
      *                                                         reason or lack of permissions.
      * @throws BleConflictingNotificationAlreadySetException if indication is already setup for this characteristic
      */
-    Observable<Observable<byte[]>> setupNotification(@NonNull UUID characteristicUuid);
+    Observable<Observable<byte[]>> setupNotification(@NonNull UUID characteristicUuid, NotificationSetupMode setupMode);
 
     /**
      * Setup characteristic notification in order to receive callbacks when given characteristic has been changed. Returned observable will
@@ -115,12 +202,23 @@ public interface RxBleConnection {
      * {@link RxBleConnection#discoverServices()}
      *
      * @param characteristic Characteristic for notification setup.
+     * @param setupMode Configures how the notification is set up. For available modes see {@link NotificationSetupMode}.
      * @return Observable emitting another observable when the notification setup is complete.
      * @throws BleCannotSetCharacteristicNotificationException if setup process notification setup process fail. This may be an internal
      *                                                         reason or lack of permissions.
      * @throws BleConflictingNotificationAlreadySetException if indication is already setup for this characteristic
      */
-    Observable<Observable<byte[]>> setupNotification(@NonNull BluetoothGattCharacteristic characteristic);
+    Observable<Observable<byte[]>> setupNotification(@NonNull BluetoothGattCharacteristic characteristic, NotificationSetupMode setupMode);
+
+    /**
+     * @see #setupIndication(UUID, NotificationSetupMode) with default setup mode.
+     */
+    Observable<Observable<byte[]>> setupIndication(@NonNull UUID characteristicUuid);
+
+    /**
+     * @see #setupIndication(BluetoothGattCharacteristic, NotificationSetupMode) with default setup mode.
+     */
+    Observable<Observable<byte[]>> setupIndication(@NonNull BluetoothGattCharacteristic characteristic);
 
     /**
      * Setup characteristic indication in order to receive callbacks when given characteristic has been changed. Returned observable will
@@ -133,13 +231,14 @@ public interface RxBleConnection {
      * the indication will not be set up and will emit an BleCharacteristicNotificationOfOtherTypeAlreadySetException
      *
      * @param characteristicUuid Characteristic UUID for indication setup.
+     * @param setupMode Configures how the notification is set up. For available modes see {@link NotificationSetupMode}.
      * @return Observable emitting another observable when the indication setup is complete.
      * @throws BleCharacteristicNotFoundException              if characteristic with given UUID hasn't been found.
      * @throws BleCannotSetCharacteristicNotificationException if setup process indication setup process fail. This may be an internal
      *                                                         reason or lack of permissions.
      * @throws BleConflictingNotificationAlreadySetException if notification is already setup for this characteristic
      */
-    Observable<Observable<byte[]>> setupIndication(@NonNull UUID characteristicUuid);
+    Observable<Observable<byte[]>> setupIndication(@NonNull UUID characteristicUuid, @NonNull NotificationSetupMode setupMode);
 
     /**
      * Setup characteristic indication in order to receive callbacks when given characteristic has been changed. Returned observable will
@@ -155,12 +254,14 @@ public interface RxBleConnection {
      * {@link RxBleConnection#discoverServices()}
      *
      * @param characteristic Characteristic for indication setup.
+     * @param setupMode Configures how the notification is set up. For available modes see {@link NotificationSetupMode}.
      * @return Observable emitting another observable when the indication setup is complete.
      * @throws BleCannotSetCharacteristicNotificationException if setup process indication setup process fail. This may be an internal
      *                                                         reason or lack of permissions.
      * @throws BleConflictingNotificationAlreadySetException if notification is already setup for this characteristic
      */
-    Observable<Observable<byte[]>> setupIndication(@NonNull BluetoothGattCharacteristic characteristic);
+    Observable<Observable<byte[]>> setupIndication(@NonNull BluetoothGattCharacteristic characteristic,
+                                                   @NonNull NotificationSetupMode setupMode);
 
     /**
      * Convenience method for characteristic retrieval. First step is service discovery which is followed by service/characteristic
@@ -241,6 +342,15 @@ public interface RxBleConnection {
     Observable<byte[]> writeCharacteristic(@NonNull BluetoothGattCharacteristic bluetoothGattCharacteristic, @NonNull byte[] data);
 
     /**
+     * Returns a LongWriteOperationBuilder used for creating atomic write operations divided into multiple writes.
+     * This is useful when the BLE peripheral does NOT handle long writes on the firmware level (in which situation
+     * a regular {@link #writeCharacteristic(UUID, byte[])} should be sufficient.
+     *
+     * @return the LongWriteOperationBuilder
+     */
+    LongWriteOperationBuilder createNewLongWriteBuilder();
+
+    /**
      * Performs GATT read operation on a descriptor from a characteristic with a given UUID from a service with a given UUID.
      *
      * @param serviceUuid Requested {@link android.bluetooth.BluetoothGattService} UUID
@@ -309,4 +419,33 @@ public interface RxBleConnection {
      */
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     Observable<Integer> requestMtu(int mtu);
+
+    /**
+     * <b>This method requires deep knowledge of RxAndroidBLE internals. Use it only as a last resort if you know
+     * what your are doing.</b>
+     * <p>
+     * Queue an operation for future execution. The method accepts a {@link RxBleRadioOperationCustom} concrete implementation
+     * and will queue it inside connection operation queue. When ready to execute, the {@link Observable<T>} returned
+     * by the {@link RxBleRadioOperationCustom#asObservable(BluetoothGatt, RxBleGattCallback, Scheduler)} will be
+     * subscribed to.
+     * <p>
+     * Every event emitted by the {@link Observable<T>} returned by
+     * {@link RxBleRadioOperationCustom#asObservable(BluetoothGatt, RxBleGattCallback, Scheduler)} will be forwarded
+     * to the {@link Observable<T>} returned by this method.
+     * <p>
+     * You <b>must</b> ensure the custom operation's {@link Observable<T>} do terminate either via {@code onCompleted}
+     * or {@code onError(Throwable)}. Otherwise, the internal queue orchestrator will wait forever for
+     * your {@link Observable<T>} to complete. Normal queue processing will be resumed after the {@link Observable<T>}
+     * returned by {@link RxBleRadioOperationCustom#asObservable(BluetoothGatt, RxBleGattCallback, Scheduler)}
+     * completes.
+     * <p>
+     * The operation will be added to the queue using a {@link com.polidea.rxandroidble.internal.RxBleRadioOperation.Priority#NORMAL}
+     * priority.
+     *
+     * @param operation The custom radio operation to queue.
+     * @param <T>       The type returned by the {@link RxBleRadioOperationCustom} instance.
+     * @return Observable emitting the value after execution or an error in case of failure.
+     */
+    <T> Observable<T> queue(RxBleRadioOperationCustom<T> operation);
+
 }

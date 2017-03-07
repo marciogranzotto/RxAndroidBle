@@ -4,7 +4,9 @@ import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
-import android.support.annotation.NonNull;
+import android.util.Pair;
+
+import com.polidea.rxandroidble.ClientComponent;
 
 import com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState;
 import com.polidea.rxandroidble.RxBleDeviceServices;
@@ -14,47 +16,69 @@ import com.polidea.rxandroidble.exceptions.BleGattDescriptorException;
 import com.polidea.rxandroidble.exceptions.BleGattException;
 import com.polidea.rxandroidble.exceptions.BleGattOperationType;
 import com.polidea.rxandroidble.internal.RxBleLog;
-
 import com.polidea.rxandroidble.internal.util.ByteAssociation;
+import com.polidea.rxandroidble.internal.util.CharacteristicChangedEvent;
+
 import java.util.UUID;
+
+import javax.inject.Inject;
+import javax.inject.Named;
 
 import rx.Observable;
 import rx.Scheduler;
+import rx.functions.Action0;
 import rx.functions.Func1;
 import rx.subjects.BehaviorSubject;
 import rx.subjects.PublishSubject;
+import rx.subjects.SerializedSubject;
 
+@ConnectionScope
 public class RxBleGattCallback {
 
-    public interface Provider {
-
-        RxBleGattCallback provide();
-    }
-
     private final Scheduler callbackScheduler;
+    private final BluetoothGattProvider bluetoothGattProvider;
     private final BehaviorSubject statusErrorSubject = BehaviorSubject.create();
-    private final BehaviorSubject<BluetoothGatt> bluetoothGattBehaviorSubject = BehaviorSubject.create();
-    private final PublishSubject<RxBleConnectionState> connectionStatePublishSubject = PublishSubject.create();
+    private final PublishSubject<Pair<BluetoothGatt, RxBleConnectionState>> gattAndConnectionStatePublishSubject = PublishSubject.create();
     private final PublishSubject<RxBleDeviceServices> servicesDiscoveredPublishSubject = PublishSubject.create();
     private final PublishSubject<ByteAssociation<UUID>> readCharacteristicPublishSubject = PublishSubject.create();
     private final PublishSubject<ByteAssociation<UUID>> writeCharacteristicPublishSubject = PublishSubject.create();
-    private final PublishSubject<ByteAssociation<Integer>> changedCharacteristicPublishSubject = PublishSubject.create();
+    private final SerializedSubject<CharacteristicChangedEvent, CharacteristicChangedEvent>
+            changedCharacteristicPublishSubject = PublishSubject.<CharacteristicChangedEvent>create().toSerialized();
     private final PublishSubject<ByteAssociation<BluetoothGattDescriptor>> readDescriptorPublishSubject = PublishSubject.create();
     private final PublishSubject<ByteAssociation<BluetoothGattDescriptor>> writeDescriptorPublishSubject = PublishSubject.create();
     private final PublishSubject<Integer> readRssiPublishSubject = PublishSubject.create();
     private final PublishSubject<Integer> changedMtuPublishSubject = PublishSubject.create();
-    private final Observable disconnectedErrorObservable = getOnConnectionStateChange()
-            .filter(this::isDisconnectedOrDisconnecting)
-            .flatMap(rxBleConnectionState -> Observable.error(new BleDisconnectedException()))
-            .doOnTerminate(bluetoothGattBehaviorSubject::onCompleted)
+    private final Observable disconnectedErrorObservable = gattAndConnectionStatePublishSubject
+            .filter(new Func1<Pair<BluetoothGatt, RxBleConnectionState>, Boolean>() {
+                @Override
+                public Boolean call(Pair<BluetoothGatt, RxBleConnectionState> pair) {
+                    return isDisconnectedOrDisconnecting(pair);
+                }
+            })
+            .flatMap(new Func1<Pair<BluetoothGatt, RxBleConnectionState>, Observable<?>>() {
+                @Override
+                public Observable<?> call(Pair<BluetoothGatt, RxBleConnectionState> pair) {
+                    return Observable.error(new BleDisconnectedException(pair.first.getDevice().getAddress()));
+                }
+            })
+            .doOnTerminate(new Action0() {
+                @Override
+                public void call() {
+                    bluetoothGattProvider.invalidate();
+                }
+            })
             .replay()
             .autoConnect(0);
 
-    public RxBleGattCallback(Scheduler callbackScheduler) {
+    @Inject
+    public RxBleGattCallback(@Named(ClientComponent.NamedSchedulers.GATT_CALLBACK) Scheduler callbackScheduler,
+                             BluetoothGattProvider bluetoothGattProvider) {
         this.callbackScheduler = callbackScheduler;
+        this.bluetoothGattProvider = bluetoothGattProvider;
     }
 
-    private boolean isDisconnectedOrDisconnecting(RxBleConnectionState rxBleConnectionState) {
+    private boolean isDisconnectedOrDisconnecting(Pair<BluetoothGatt, RxBleConnectionState> pair) {
+        RxBleConnectionState rxBleConnectionState = pair.second;
         return rxBleConnectionState == RxBleConnectionState.DISCONNECTED || rxBleConnectionState == RxBleConnectionState.DISCONNECTING;
     }
 
@@ -64,171 +88,111 @@ public class RxBleGattCallback {
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             RxBleLog.d("onConnectionStateChange newState=%d status=%d", newState, status);
             super.onConnectionStateChange(gatt, status, newState);
-            bluetoothGattBehaviorSubject.onNext(gatt);
+            bluetoothGattProvider.updateBluetoothGatt(gatt);
 
             propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.CONNECTION_STATE);
-
-            Observable.just(mapConnectionStateToRxBleConnectionStatus(newState))
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(connectionStatePublishSubject::onNext);
+            gattAndConnectionStatePublishSubject.onNext(new Pair<>(gatt, mapConnectionStateToRxBleConnectionStatus(newState)));
         }
 
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
             RxBleLog.d("onServicesDiscovered status=%d", status);
             super.onServicesDiscovered(gatt, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.SERVICE_DISCOVERY)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.SERVICE_DISCOVERY)) {
+                servicesDiscoveredPublishSubject.onNext(new RxBleDeviceServices(gatt.getServices()));
             }
-
-            Observable.just(gatt)
-                    .map(BluetoothGatt::getServices)
-                    .map(RxBleDeviceServices::new)
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(servicesDiscoveredPublishSubject::onNext);
         }
 
         @Override
         public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
             RxBleLog.d("onCharacteristicRead characteristic=%s status=%d", characteristic.getUuid(), status);
             super.onCharacteristicRead(gatt, characteristic, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, characteristic, status, BleGattOperationType.CHARACTERISTIC_READ)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, characteristic, status, BleGattOperationType.CHARACTERISTIC_READ)) {
+                readCharacteristicPublishSubject.onNext(new ByteAssociation<>(characteristic.getUuid(), characteristic.getValue()));
             }
-
-            just(characteristic)
-                    .map(associateCharacteristicWithBytes())
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(readCharacteristicPublishSubject::onNext);
         }
 
         @Override
         public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
             RxBleLog.d("onCharacteristicWrite characteristic=%s status=%d", characteristic.getUuid(), status);
             super.onCharacteristicWrite(gatt, characteristic, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, characteristic, status, BleGattOperationType.CHARACTERISTIC_WRITE)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, characteristic, status, BleGattOperationType.CHARACTERISTIC_WRITE)) {
+                writeCharacteristicPublishSubject.onNext(new ByteAssociation<>(characteristic.getUuid(), characteristic.getValue()));
             }
-
-            just(characteristic)
-                    .map(associateCharacteristicWithBytes())
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(writeCharacteristicPublishSubject::onNext);
         }
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             RxBleLog.d("onCharacteristicChanged characteristic=%s", characteristic.getUuid());
             super.onCharacteristicChanged(gatt, characteristic);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            just(characteristic)
-                    .map(associateCharacteristicWithBytesByInstanceId())
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(changedCharacteristicPublishSubject::onNext);
+            /**
+             * It is important to call changedCharacteristicPublishSubject as soon as possible because a quick changing
+             * characteristic could lead to out-of-order execution since onCharacteristicChanged may be called on arbitrary
+             * threads.
+             */
+            changedCharacteristicPublishSubject.onNext(
+                    new CharacteristicChangedEvent(
+                            characteristic.getUuid(),
+                            characteristic.getInstanceId(),
+                            characteristic.getValue()
+                    )
+            );
         }
 
         @Override
         public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
             RxBleLog.d("onCharacteristicRead descriptor=%s status=%d", descriptor.getUuid(), status);
             super.onDescriptorRead(gatt, descriptor, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, descriptor, status, BleGattOperationType.DESCRIPTOR_READ)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, descriptor, status, BleGattOperationType.DESCRIPTOR_READ)) {
+                readDescriptorPublishSubject.onNext(new ByteAssociation<>(descriptor, descriptor.getValue()));
             }
-
-            just(descriptor)
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(readDescriptorPublishSubject::onNext);
         }
 
         @Override
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
             RxBleLog.d("onDescriptorWrite descriptor=%s status=%d", descriptor.getUuid(), status);
             super.onDescriptorWrite(gatt, descriptor, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, descriptor, status, BleGattOperationType.DESCRIPTOR_WRITE)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, descriptor, status, BleGattOperationType.DESCRIPTOR_WRITE)) {
+                writeDescriptorPublishSubject.onNext(new ByteAssociation<>(descriptor, descriptor.getValue()));
             }
-
-            just(descriptor)
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(writeDescriptorPublishSubject::onNext);
         }
 
         @Override
         public void onReliableWriteCompleted(BluetoothGatt gatt, int status) {
             RxBleLog.d("onReliableWriteCompleted status=%d", status);
             super.onReliableWriteCompleted(gatt, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.RELIABLE_WRITE_COMPLETED)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.RELIABLE_WRITE_COMPLETED)) {
+                return; // TODO Implement reliable write
             }
-
-            // TODO Implement reliable write
         }
 
         @Override
         public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
             RxBleLog.d("onReadRemoteRssi rssi=%d status=%d", rssi, status);
             super.onReadRemoteRssi(gatt, rssi, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.READ_RSSI)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.READ_RSSI)) {
+                readRssiPublishSubject.onNext(rssi);
             }
-
-            Observable.just(rssi)
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(readRssiPublishSubject::onNext);
         }
 
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
             RxBleLog.d("onMtuChanged mtu=%d status=%d", mtu, status);
             super.onMtuChanged(gatt, mtu, status);
-            bluetoothGattBehaviorSubject.onNext(gatt);
 
-            if (propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.ON_MTU_CHANGED)) {
-                return;
+            if (!propagateStatusErrorIfGattErrorOccurred(gatt, status, BleGattOperationType.ON_MTU_CHANGED)) {
+                changedMtuPublishSubject.onNext(mtu);
             }
-
-            Observable.just(mtu)
-                    .compose(getSubscribeAndObserveOnTransformer())
-                    .subscribe(changedMtuPublishSubject::onNext);
         }
     };
-
-    @NonNull
-    private Observable<ByteAssociation<BluetoothGattCharacteristic>> just(BluetoothGattCharacteristic bluetoothGattCharacteristic) {
-        final byte[] value = bluetoothGattCharacteristic.getValue();
-        return Observable.defer(() -> Observable.just(ByteAssociation.create(bluetoothGattCharacteristic, value)));
-    }
-
-    @NonNull
-    private Func1<ByteAssociation<BluetoothGattCharacteristic>, ByteAssociation<UUID>> associateCharacteristicWithBytes() {
-        return pair -> new ByteAssociation<>(pair.first.getUuid(), pair.second);
-    }
-
-    @NonNull
-    private Func1<ByteAssociation<BluetoothGattCharacteristic>, ByteAssociation<Integer>> associateCharacteristicWithBytesByInstanceId() {
-        return pair -> new ByteAssociation<>(pair.first.getInstanceId(), pair.second);
-    }
-
-    @NonNull
-    private Observable<ByteAssociation<BluetoothGattDescriptor>> just(BluetoothGattDescriptor bluetoothGattDescriptor) {
-        final byte[] value = bluetoothGattDescriptor.getValue();
-        return Observable.defer(() -> Observable.just(ByteAssociation.create(bluetoothGattDescriptor, value)));
-    }
 
     private RxBleConnectionState mapConnectionStateToRxBleConnectionStatus(int newState) {
 
@@ -242,10 +206,6 @@ public class RxBleGattCallback {
             default:
                 return RxBleConnectionState.DISCONNECTED;
         }
-    }
-
-    private <T> Observable.Transformer<T, T> getSubscribeAndObserveOnTransformer() {
-        return observable -> observable.subscribeOn(callbackScheduler).observeOn(callbackScheduler);
     }
 
     private boolean propagateStatusErrorIfGattErrorOccurred(
@@ -286,7 +246,7 @@ public class RxBleGattCallback {
 
     private boolean propagateStatusError(BleGattException exception) {
         statusErrorSubject.onError(exception);
-        bluetoothGattBehaviorSubject.onCompleted();
+        bluetoothGattProvider.invalidate();
         return true;
     }
 
@@ -301,10 +261,6 @@ public class RxBleGattCallback {
 
     public BluetoothGattCallback getBluetoothGattCallback() {
         return bluetoothGattCallback;
-    }
-
-    public Observable<BluetoothGatt> getBluetoothGatt() {
-        return bluetoothGattBehaviorSubject;
     }
 
     /**
@@ -322,38 +278,46 @@ public class RxBleGattCallback {
      * Does NOT emit errors even if status != GATT_SUCCESS.
      */
     public Observable<RxBleConnectionState> getOnConnectionStateChange() {
-        return connectionStatePublishSubject;
+        return gattAndConnectionStatePublishSubject.map(
+                new Func1<Pair<BluetoothGatt, RxBleConnectionState>, RxBleConnectionState>() {
+                    @Override
+                    public RxBleConnectionState call(
+                            Pair<BluetoothGatt, RxBleConnectionState> bluetoothGattRxBleConnectionStatePair) {
+                        return bluetoothGattRxBleConnectionStatePair.second;
+                    }
+                }
+        ).observeOn(callbackScheduler);
     }
 
     public Observable<RxBleDeviceServices> getOnServicesDiscovered() {
-        return withHandlingStatusErrorAndDisconnection(servicesDiscoveredPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(servicesDiscoveredPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<Integer> getOnMtuChanged() {
-        return withHandlingStatusErrorAndDisconnection(changedMtuPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(changedMtuPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<ByteAssociation<UUID>> getOnCharacteristicRead() {
-        return withHandlingStatusErrorAndDisconnection(readCharacteristicPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(readCharacteristicPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<ByteAssociation<UUID>> getOnCharacteristicWrite() {
-        return withHandlingStatusErrorAndDisconnection(writeCharacteristicPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(writeCharacteristicPublishSubject).observeOn(callbackScheduler);
     }
 
-    public Observable<ByteAssociation<Integer>> getOnCharacteristicChanged() {
-        return withHandlingStatusErrorAndDisconnection(changedCharacteristicPublishSubject);
+    public Observable<CharacteristicChangedEvent> getOnCharacteristicChanged() {
+        return withHandlingStatusErrorAndDisconnection(changedCharacteristicPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<ByteAssociation<BluetoothGattDescriptor>> getOnDescriptorRead() {
-        return withHandlingStatusErrorAndDisconnection(readDescriptorPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(readDescriptorPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<ByteAssociation<BluetoothGattDescriptor>> getOnDescriptorWrite() {
-        return withHandlingStatusErrorAndDisconnection(writeDescriptorPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(writeDescriptorPublishSubject).observeOn(callbackScheduler);
     }
 
     public Observable<Integer> getOnRssiRead() {
-        return withHandlingStatusErrorAndDisconnection(readRssiPublishSubject);
+        return withHandlingStatusErrorAndDisconnection(readRssiPublishSubject).observeOn(callbackScheduler);
     }
 }

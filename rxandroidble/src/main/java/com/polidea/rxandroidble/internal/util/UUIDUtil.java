@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import javax.inject.Inject;
+
 /**
  * @link http://stackoverflow.com/questions/31668791/how-can-i-read-uuids-from-advertisement-data-ios-overflow-area-in-android
  */
@@ -49,6 +51,8 @@ public class UUIDUtil {
     public static final int UUID_BYTES_128_BIT = 16;
 
 
+    // For more details refer to Bluetooth 4.1 specification, Volume 3, Part C, Section 18.
+    @Inject
     public UUIDUtil() {
     }
 

@@ -1,5 +1,7 @@
 package com.polidea.rxandroidble
 
+import java.util.concurrent.Executors
+
 import android.bluetooth.BluetoothDevice
 import android.content.Context
 import com.polidea.rxandroidble.exceptions.BleScanException
@@ -9,7 +11,9 @@ import com.polidea.rxandroidble.internal.RxBleRadioOperation
 import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationScan
 import com.polidea.rxandroidble.internal.util.UUIDUtil
 import rx.Observable
+import rx.Scheduler
 import rx.observers.TestSubscriber
+import rx.schedulers.Schedulers
 import spock.lang.Specification
 import spock.lang.Unroll
 
@@ -41,7 +45,8 @@ class RxBleClientTest extends Specification {
                 adapterStateObservable.asObservable(),
                 uuidParserSpy,
                 locationServicesStatusMock,
-                mockDeviceProvider
+                mockDeviceProvider,
+                Executors.newSingleThreadExecutor()
         )
     }
 
@@ -370,6 +375,10 @@ class RxBleClientTest extends Specification {
             }
         }
         def scanTestRadio = new RxBleRadio() {
+
+            def Scheduler scheduler() {
+                return Schedulers.immediate()
+            }
 
             @Override
             def <T> Observable<T> queue(RxBleRadioOperation<T> rxBleRadioOperation) {

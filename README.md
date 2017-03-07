@@ -102,7 +102,7 @@ device.establishConnection(context, false)
 ```
 #### Multiple reads
 ```java
- device.establishConnection(context, false)
+device.establishConnection(context, false)
     .flatMap(rxBleConnection -> Observable.combineLatest(
         rxBleConnection.readCharacteristic(firstUUID),
         rxBleConnection.readCharacteristic(secondUUID),
@@ -115,6 +115,26 @@ device.establishConnection(context, false)
         throwable -> {
             // Handle an error here.
         }
+    );
+```
+#### Long write
+```java
+device.establishConnection(context, false)
+    .flatMap(rxBleConnection -> rxBleConnection.createNewLongWriteBuilder()
+            .setCharacteristicUuid(uuid) // required or the .setCharacteristic()
+            // .setCharacteristic() alternative if you have a specific BluetoothGattCharacteristic
+            .setBytes(byteArray)
+            // .setMaxBatchSize(maxBatchSize) // optional -> default 20 or current MTU
+            // .setWriteOperationAckStrategy(ackStrategy) // optional to postpone writing next batch
+            .build()
+    )
+    .subscribe(
+            byteArray -> {
+                // Written data.
+            },
+            throwable -> {
+                // Handle an error here.
+            }
     );
 ```
 #### Read and write combined
@@ -177,6 +197,8 @@ RxBleClient.setLogLevel(RxBleLog.DEBUG);
 ### Error handling
 Every error you may encounter is provided via onError callback. Each public method has JavaDoc explaining possible errors.
 
+### Helpers
+We encourage you to check the package `com.polidea.rxandroidble.helpers` which contains handy reactive wrappers for some typical use-cases.
 
 ## More examples
 
@@ -214,6 +236,7 @@ When submitting code, please make every effort to follow existing conventions an
 * Michał Zieliński (michal.zielinski@polidea.com)
 * Fracturedpsyche (https://github.com/fracturedpsyche)
 * Andrea Pregnolato (https://github.com/pregno)
+* Matthieu Vachon (https://github.com/maoueh) - custom operations, yay!
 
 ## License
 

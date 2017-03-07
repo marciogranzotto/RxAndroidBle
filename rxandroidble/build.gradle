@@ -1,6 +1,6 @@
 apply plugin: 'com.android.library'
+apply plugin: 'com.neenbedankt.android-apt'
 apply plugin: 'groovyx.android'
-apply plugin: 'me.tatarka.retrolambda'
 apply from: rootProject.file('gradle/gradle-mvn-push.gradle')
 
 android {
@@ -13,7 +13,7 @@ android {
         versionCode 1
         versionName VERSION_NAME
     }
-    
+
     buildTypes {
         release {
             minifyEnabled false
@@ -40,13 +40,16 @@ android {
     lintOptions {
         abortOnError false
     }
+
+    preBuild.dependsOn 'checkstyle'
 }
 
 dependencies {
     compile rootProject.ext.libs.rxjava
     compile rootProject.ext.libs.rxandroid
     compile rootProject.ext.libs.support_annotations
-    retrolambdaConfig rootProject.ext.libs.retrolambda
+    compile rootProject.ext.libs.dagger
+    apt rootProject.ext.libs.dagger_compiler
 
     // Test dependencies
     testCompile rootProject.ext.libs.junit

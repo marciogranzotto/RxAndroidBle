@@ -1,11 +1,8 @@
 package com.polidea.rxandroidble;
 
 import android.annotation.TargetApi;
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.le.ScanSettings;
-import android.content.Context;
-import android.location.LocationManager;
 import android.os.Build;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
@@ -18,13 +15,7 @@ import com.polidea.rxandroidble.internal.RxBleInternalScanResultV21;
 import com.polidea.rxandroidble.internal.RxBleRadio;
 import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationScan;
 import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationScanV21;
-import com.polidea.rxandroidble.internal.radio.RxBleRadioImpl;
-import com.polidea.rxandroidble.internal.util.BleConnectionCompat;
-import com.polidea.rxandroidble.internal.util.CheckerLocationPermission;
-import com.polidea.rxandroidble.internal.util.CheckerLocationProvider;
 import com.polidea.rxandroidble.internal.util.LocationServicesStatus;
-import com.polidea.rxandroidble.internal.util.ProviderApplicationTargetSdk;
-import com.polidea.rxandroidble.internal.util.ProviderDeviceSdk;
 import com.polidea.rxandroidble.internal.util.RxBleAdapterWrapper;
 import com.polidea.rxandroidble.internal.util.UUIDUtil;
 
@@ -34,74 +25,46 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+
+import javax.inject.Inject;
+import javax.inject.Named;
 
 import rx.Observable;
-import rx.Scheduler;
-import rx.schedulers.Schedulers;
+import rx.functions.Action0;
+import rx.functions.Func1;
 
 class RxBleClientImpl extends RxBleClient {
 
     private final RxBleRadio rxBleRadio;
     private final UUIDUtil uuidUtil;
     private final RxBleDeviceProvider rxBleDeviceProvider;
+    private final ExecutorService executorService;
     private final Map<Set<UUID>, Observable<RxBleScanResult>> queuedScanOperations = new HashMap<>();
     private final RxBleAdapterWrapper rxBleAdapterWrapper;
     private final Observable<BleAdapterState> rxBleAdapterStateObservable;
     private final LocationServicesStatus locationServicesStatus;
 
+    @Inject
     RxBleClientImpl(RxBleAdapterWrapper rxBleAdapterWrapper,
                     RxBleRadio rxBleRadio,
                     Observable<BleAdapterState> adapterStateObservable,
                     UUIDUtil uuidUtil,
                     LocationServicesStatus locationServicesStatus,
-                    RxBleDeviceProvider rxBleDeviceProvider) {
+                    RxBleDeviceProvider rxBleDeviceProvider,
+                    @Named(ClientComponent.NamedSchedulers.GATT_CALLBACK) ExecutorService executorService) {
         this.uuidUtil = uuidUtil;
         this.rxBleRadio = rxBleRadio;
         this.rxBleAdapterWrapper = rxBleAdapterWrapper;
         this.rxBleAdapterStateObservable = adapterStateObservable;
         this.locationServicesStatus = locationServicesStatus;
         this.rxBleDeviceProvider = rxBleDeviceProvider;
+        this.executorService = executorService;
     }
 
-    public static RxBleClientImpl getInstance(@NonNull Context context) {
-        final Context applicationContext = context.getApplicationContext();
-        final RxBleAdapterWrapper rxBleAdapterWrapper = new RxBleAdapterWrapper(BluetoothAdapter.getDefaultAdapter());
-        final RxBleRadioImpl rxBleRadio = new RxBleRadioImpl();
-        final RxBleAdapterStateObservable adapterStateObservable = new RxBleAdapterStateObservable(applicationContext);
-        final BleConnectionCompat bleConnectionCompat = new BleConnectionCompat(context);
-        final ExecutorService executor = Executors.newSingleThreadExecutor();
-        final Scheduler gattCallbacksProcessingScheduler = Schedulers.from(executor);
-        final LocationManager locationManager = (LocationManager) applicationContext.getSystemService(Context.LOCATION_SERVICE);
-        final CheckerLocationPermission checkerLocationPermission = new CheckerLocationPermission(applicationContext);
-        final CheckerLocationProvider checkerLocationProvider = new CheckerLocationProvider(locationManager);
-        final ProviderApplicationTargetSdk providerApplicationTargetSdk = new ProviderApplicationTargetSdk(applicationContext);
-        final ProviderDeviceSdk providerDeviceSdk = new ProviderDeviceSdk();
-        return new RxBleClientImpl(
-                rxBleAdapterWrapper,
-                rxBleRadio,
-                adapterStateObservable,
-                new UUIDUtil(),
-                new LocationServicesStatus(
-                        checkerLocationProvider,
-                        checkerLocationPermission,
-                        providerDeviceSdk,
-                        providerApplicationTargetSdk
-                ),
-                new RxBleDeviceProvider(
-                        rxBleAdapterWrapper,
-                        rxBleRadio,
-                        bleConnectionCompat,
-                        adapterStateObservable,
-                        gattCallbacksProcessingScheduler
-                )
-        ) {
-            @Override
-            protected void finalize() throws Throwable {
-                super.finalize();
-                executor.shutdown();
-            }
-        };
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        executorService.shutdown();
     }
 
     @Override
@@ -159,9 +122,19 @@ class RxBleClientImpl extends RxBleClient {
 
     private <T> Observable<T> bluetoothAdapterOffExceptionObservable() {
         return rxBleAdapterStateObservable
-                .filter(state -> state != BleAdapterState.STATE_ON)
+                .filter(new Func1<BleAdapterState, Boolean>() {
+                    @Override
+                    public Boolean call(BleAdapterState state) {
+                        return state != BleAdapterState.STATE_ON;
+                    }
+                })
                 .first()
-                .flatMap(status -> Observable.error(new BleScanException(BleScanException.BLUETOOTH_DISABLED)));
+                .flatMap(new Func1<BleAdapterState, Observable<T>>() {
+                    @Override
+                    public Observable<T> call(BleAdapterState status) {
+                        return Observable.error(new BleScanException(BleScanException.BLUETOOTH_DISABLED));
+                    }
+                });
     }
 
     private Observable<RxBleScanResult> createScanOperation(ScanSettings settings, @Nullable UUID[] filterServiceUUIDs) {
@@ -176,19 +149,26 @@ class RxBleClientImpl extends RxBleClient {
         return new RxBleScanResult(bleDevice, scanResult.getRssi(), scanRecord);
     }
 
-    private Observable<RxBleScanResult> createScanOperationV18(@Nullable UUID[] filterServiceUUIDs) {
+    private Observable<RxBleScanResult> createScanOperationV18(@Nullable final UUID[] filterServiceUUIDs) {
         final Set<UUID> filteredUUIDs = uuidUtil.toDistinctSet(filterServiceUUIDs);
         final RxBleRadioOperationScan scanOperation = new RxBleRadioOperationScan(filterServiceUUIDs, rxBleAdapterWrapper, uuidUtil);
         return rxBleRadio.queue(scanOperation)
-                .doOnUnsubscribe(() -> {
-
-                    synchronized (queuedScanOperations) {
-                        scanOperation.stop();
-                        queuedScanOperations.remove(filteredUUIDs);
+                .doOnUnsubscribe(new Action0() {
+                    @Override
+                    public void call() {
+                        synchronized (queuedScanOperations) {
+                            scanOperation.stop();
+                            queuedScanOperations.remove(filteredUUIDs);
+                        }
                     }
                 })
-                .mergeWith(bluetoothAdapterOffExceptionObservable())
-                .map(this::convertToPublicScanResult)
+                .mergeWith(this.<RxBleInternalScanResult>bluetoothAdapterOffExceptionObservable())
+                .map(new Func1<RxBleInternalScanResult, RxBleScanResult>() {
+                    @Override
+                    public RxBleScanResult call(RxBleInternalScanResult scanResult) {
+                        return convertToPublicScanResult(scanResult);
+                    }
+                })
                 .share();
     }
 
@@ -203,15 +183,22 @@ class RxBleClientImpl extends RxBleClient {
         final Set<UUID> filteredUUIDs = uuidUtil.toDistinctSet(filterServiceUUIDs);
         final RxBleRadioOperationScanV21 scanOperation = new RxBleRadioOperationScanV21(settings, filterServiceUUIDs, rxBleAdapterWrapper);
         return rxBleRadio.queue(scanOperation)
-                .doOnUnsubscribe(() -> {
-
-                    synchronized (queuedScanOperations) {
-                        scanOperation.stop();
-                        queuedScanOperations.remove(filteredUUIDs);
+                .doOnUnsubscribe(new Action0() {
+                    @Override
+                    public void call() {
+                        synchronized (queuedScanOperations) {
+                            scanOperation.stop();
+                            queuedScanOperations.remove(filteredUUIDs);
+                        }
                     }
                 })
-                .mergeWith(bluetoothAdapterOffExceptionObservable())
-                .map(this::convertToPublicScanResult)
+                .mergeWith(this.<RxBleInternalScanResultV21>bluetoothAdapterOffExceptionObservable())
+                .map(new Func1<RxBleInternalScanResultV21, RxBleScanResult>() {
+                    @Override
+                    public RxBleScanResult call(RxBleInternalScanResultV21 scanResult) {
+                        return convertToPublicScanResult(scanResult);
+                    }
+                })
                 .share();
     }
 

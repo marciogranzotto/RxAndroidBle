@@ -7,10 +7,12 @@ import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.os.Build;
+import android.os.DeadObjectException;
 import android.os.ParcelUuid;
 import android.support.annotation.Nullable;
 
 import com.polidea.rxandroidble.RxBleScanRecord;
+import com.polidea.rxandroidble.exceptions.BleException;
 import com.polidea.rxandroidble.exceptions.BleScanException;
 import com.polidea.rxandroidble.internal.RxBleInternalScanResultV21;
 import com.polidea.rxandroidble.internal.RxBleLog;
@@ -68,6 +70,11 @@ public class RxBleRadioOperationScanV21 extends RxBleRadioOperation<RxBleInterna
         } finally {
             releaseRadio();
         }
+    }
+
+    @Override
+    protected BleException provideException(DeadObjectException deadObjectException) {
+        return new BleScanException(BleScanException.BLUETOOTH_DISABLED, deadObjectException);
     }
 
     public void stop() {

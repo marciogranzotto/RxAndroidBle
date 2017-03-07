@@ -3,11 +3,16 @@ package com.polidea.rxandroidble.internal.operations
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import com.polidea.rxandroidble.exceptions.BleGattCannotStartException
+import com.polidea.rxandroidble.exceptions.BleGattCallbackTimeoutException
 import com.polidea.rxandroidble.exceptions.BleGattOperationType
 import com.polidea.rxandroidble.internal.connection.RxBleGattCallback
 import com.polidea.rxandroidble.internal.util.ByteAssociation
+import com.polidea.rxandroidble.internal.util.MockOperationTimeoutConfiguration
+
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import rx.observers.TestSubscriber
+import rx.schedulers.TestScheduler
 import rx.subjects.PublishSubject
 import spock.lang.Specification
 
@@ -21,9 +26,12 @@ public class RxBleRadioOperationCharacteristicReadTest extends Specification {
     TestSubscriber<byte[]> testSubscriber = new TestSubscriber()
     PublishSubject<ByteAssociation<UUID>> onCharacteristicReadSubject = PublishSubject.create()
     Semaphore mockSemaphore = Mock Semaphore
-    RxBleRadioOperationCharacteristicRead objectUnderTest = new RxBleRadioOperationCharacteristicRead(mockCallback, mockGatt, mockCharacteristic)
+    TestScheduler testScheduler = new TestScheduler()
+    RxBleRadioOperationCharacteristicRead objectUnderTest
 
     def setup() {
+        objectUnderTest = new RxBleRadioOperationCharacteristicRead(mockCallback, mockGatt,
+                new MockOperationTimeoutConfiguration(testScheduler), mockCharacteristic)
         mockCharacteristic.getUuid() >> mockCharacteristicUUID
         mockCallback.getOnCharacteristicRead() >> onCharacteristicReadSubject
         objectUnderTest.setRadioBlockingSemaphore(mockSemaphore)
@@ -195,6 +203,24 @@ public class RxBleRadioOperationCharacteristicReadTest extends Specification {
         1 * mockSemaphore.release()
     }
 
+    def "should timeout if RxBleGattCallback.onCharacteristicRead() won't trigger in 30 seconds"() {
+
+        given:
+        givenCharacteristicReadStartsOk()
+        objectUnderTest.run()
+
+        when:
+        testScheduler.advanceTimeBy(30, TimeUnit.SECONDS)
+
+        then:
+        testSubscriber.assertError(BleGattCallbackTimeoutException)
+
+        and:
+        testSubscriber.assertError {
+            ((BleGattCallbackTimeoutException)it).getBleGattOperationType() == BleGattOperationType.CHARACTERISTIC_READ
+        }
+    }
+
     private givenCharacteristicWithUUIDContainData(Map... returnedDataOnRead) {
         mockGatt.readCharacteristic(mockCharacteristic) >> {
             returnedDataOnRead.each {
@@ -214,5 +240,9 @@ public class RxBleRadioOperationCharacteristicReadTest extends Specification {
 
     private givenCharacteristicReadFailToStart() {
         mockGatt.readCharacteristic(mockCharacteristic) >> false
+    }
+
+    private givenCharacteristicReadStartsOk() {
+        mockGatt.readCharacteristic(mockCharacteristic) >> true
     }
 }
