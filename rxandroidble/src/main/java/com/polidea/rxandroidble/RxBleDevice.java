@@ -72,4 +72,6 @@ public interface RxBleDevice {
      * @return the BluetoothDevice
      */
     BluetoothDevice getBluetoothDevice();
+
+    Observable<Integer> bond(final Context context);
 }

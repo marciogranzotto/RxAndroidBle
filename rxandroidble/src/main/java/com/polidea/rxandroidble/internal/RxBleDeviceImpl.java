@@ -1,7 +1,10 @@
 package com.polidea.rxandroidble.internal;
 
 import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 
 import com.polidea.rxandroidble.RxBleConnection;
 import com.polidea.rxandroidble.RxBleDevice;
@@ -10,9 +13,12 @@ import com.polidea.rxandroidble.exceptions.BleAlreadyConnectedException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rx.Observable;
+import rx.Subscriber;
 import rx.functions.Action0;
 import rx.functions.Action1;
+import rx.functions.Cancellable;
 import rx.functions.Func0;
+import rx.internal.subscriptions.CancellableSubscription;
 import rx.subjects.BehaviorSubject;
 
 import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.CONNECTED;
@@ -88,6 +94,51 @@ class RxBleDeviceImpl implements RxBleDevice {
     @Override
     public BluetoothDevice getBluetoothDevice() {
         return bluetoothDevice;
+    }
+
+    @Override
+    public Observable<Integer> bond(final Context context) {
+        return Observable.create(new Observable.OnSubscribe<Integer>() {
+            @Override
+            public void call(final Subscriber<? super Integer> subscriber) {
+
+                final int bondState = bluetoothDevice.getBondState();
+                if (bondState == BluetoothDevice.BOND_BONDED) {
+                    subscriber.onNext(bondState);
+                    subscriber.onCompleted();
+                    return;
+                }
+
+
+                final BroadcastReceiver receiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        String action = intent.getAction();
+
+                        if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
+                            int state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1);
+                            if (state == BluetoothDevice.BOND_BONDED) {
+                                if (!subscriber.isUnsubscribed()) {
+                                    subscriber.onNext(state);
+                                    subscriber.onCompleted();
+                                }
+                            }
+                        }
+                    }
+                };
+
+                context.registerReceiver(receiver, new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+
+                bluetoothDevice.createBond();
+
+                subscriber.add(new CancellableSubscription(new Cancellable() {
+                    @Override
+                    public void cancel() throws Exception {
+                        context.unregisterReceiver(receiver);
+                    }
+                }));
+            }
+        });
     }
 
     @Override
