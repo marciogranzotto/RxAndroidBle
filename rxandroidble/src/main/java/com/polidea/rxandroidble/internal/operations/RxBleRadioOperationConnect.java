@@ -1,10 +1,11 @@
 package com.polidea.rxandroidble.internal.operations;
 
+import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.CONNECTED;
+
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.os.DeadObjectException;
 import android.support.annotation.NonNull;
-
 import com.polidea.rxandroidble.RxBleConnection;
 import com.polidea.rxandroidble.exceptions.BleDisconnectedException;
 import com.polidea.rxandroidble.exceptions.BleException;
@@ -12,72 +13,42 @@ import com.polidea.rxandroidble.exceptions.BleGattCallbackTimeoutException;
 import com.polidea.rxandroidble.exceptions.BleGattOperationType;
 import com.polidea.rxandroidble.internal.RxBleLog;
 import com.polidea.rxandroidble.internal.RxBleRadioOperation;
-import com.polidea.rxandroidble.internal.connection.BluetoothGattProvider;
 import com.polidea.rxandroidble.internal.connection.RxBleGattCallback;
 import com.polidea.rxandroidble.internal.util.BleConnectionCompat;
-
 import java.util.concurrent.Callable;
-
-import javax.inject.Inject;
-import javax.inject.Named;
-
+import java.util.concurrent.TimeUnit;
 import rx.Observable;
+import rx.Scheduler;
 import rx.functions.Action0;
 import rx.functions.Action1;
 import rx.functions.Func1;
 import rx.subjects.BehaviorSubject;
 
-import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.CONNECTED;
-import static com.polidea.rxandroidble.internal.DeviceModule.CONNECT_TIMEOUT;
-
 public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGatt> {
 
-    public static class Builder {
-
-        private final BluetoothDevice bluetoothDevice;
-        private final BleConnectionCompat connectionCompat;
-        private final RxBleGattCallback rxBleGattCallback;
-        private final BluetoothGattProvider bluetoothGattProvider;
-        private final TimeoutConfiguration connectTimeout;
-        private boolean autoConnect = false;
-
-        @Inject
-        public Builder(
-                BluetoothDevice bluetoothDevice,
-                BleConnectionCompat connectionCompat,
-                RxBleGattCallback rxBleGattCallback,
-                BluetoothGattProvider bluetoothGattProvider,
-                @Named(CONNECT_TIMEOUT) TimeoutConfiguration connectTimeout) {
-            this.bluetoothDevice = bluetoothDevice;
-            this.connectionCompat = connectionCompat;
-            this.rxBleGattCallback = rxBleGattCallback;
-            this.bluetoothGattProvider = bluetoothGattProvider;
-            this.connectTimeout = connectTimeout;
-        }
-
-        public Builder setAutoConnect(boolean autoConnect) {
-            this.autoConnect = autoConnect;
-            return this;
-        }
-
-        public RxBleRadioOperationConnect build() {
-            return new RxBleRadioOperationConnect(bluetoothDevice, connectionCompat, rxBleGattCallback, bluetoothGattProvider,
-                    connectTimeout, autoConnect);
-        }
-    }
-
     private final BluetoothDevice bluetoothDevice;
-    private final BleConnectionCompat connectionCompat;
+
     private final RxBleGattCallback rxBleGattCallback;
-    private final BluetoothGattProvider bluetoothGattProvider;
-    private final TimeoutConfiguration connectTimeout;
+
+    private final BleConnectionCompat connectionCompat;
+
     private final boolean autoConnect;
+
+    private final long timeout;
+
+    private final TimeUnit timeoutTimeUnit;
+
+    private final Scheduler timeoutScheduler;
+
+    private final BehaviorSubject<BluetoothGatt> bluetoothGattBehaviorSubject = BehaviorSubject.create();
+
     private final Runnable releaseRadioRunnable = new Runnable() {
         @Override
         public void run() {
-            releaseRadio();
+            RxBleRadioOperationConnect.this.releaseRadio();
         }
     };
+
     private final Runnable emptyRunnable = new Runnable() {
         @Override
         public void run() {
@@ -101,20 +72,16 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
             })
             .share();
 
-    @Inject
-    RxBleRadioOperationConnect(
-            BluetoothDevice bluetoothDevice,
-            BleConnectionCompat connectionCompat,
-            RxBleGattCallback rxBleGattCallback,
-            BluetoothGattProvider bluetoothGattProvider,
-            @Named(CONNECT_TIMEOUT) TimeoutConfiguration connectTimeout,
-            boolean autoConnect) {
+    public RxBleRadioOperationConnect(BluetoothDevice bluetoothDevice, RxBleGattCallback rxBleGattCallback,
+                                      BleConnectionCompat connectionCompat, boolean autoConnect, long timeout, TimeUnit timeoutTimeUnit,
+                                      Scheduler timeoutScheduler) {
         this.bluetoothDevice = bluetoothDevice;
-        this.connectionCompat = connectionCompat;
         this.rxBleGattCallback = rxBleGattCallback;
-        this.bluetoothGattProvider = bluetoothGattProvider;
-        this.connectTimeout = connectTimeout;
+        this.connectionCompat = connectionCompat;
         this.autoConnect = autoConnect;
+        this.timeout = timeout;
+        this.timeoutTimeUnit = timeoutTimeUnit;
+        this.timeoutScheduler = timeoutScheduler;
     }
 
     @Override
@@ -159,8 +126,7 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
                 return autoConnect
                         ? bluetoothGattObservable
                         : bluetoothGattObservable
-                        .timeout(connectTimeout.timeout, connectTimeout.timeoutTimeUnit,
-                                prepareConnectionTimeoutErrorObservable(), connectTimeout.timeoutScheduler);
+                        .timeout(timeout, timeoutTimeUnit, prepareConnectionTimeoutErrorObservable(), timeoutScheduler);
             }
         };
     }
@@ -168,7 +134,7 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
     @NonNull
     private Observable<BluetoothGatt> prepareConnectionTimeoutErrorObservable() {
         return Observable.error(
-                new BleGattCallbackTimeoutException(bluetoothGattProvider.getBluetoothGatt(), BleGattOperationType.CONNECTION_STATE));
+                new BleGattCallbackTimeoutException(bluetoothGattBehaviorSubject.getValue(), BleGattOperationType.CONNECTION_STATE));
     }
 
     @NonNull
@@ -184,8 +150,7 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
     /**
      * Emits BluetoothGatt and completes after connection is established.
      *
-     * @return BluetoothGatt after connection reaches {@link com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState#CONNECTED}
-     * state.
+     * @return BluetoothGatt after connection reaches {@link com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState#CONNECTED} state.
      * @throws com.polidea.rxandroidble.exceptions.BleDisconnectedException if connection was disconnected/failed before it was established.
      */
     @NonNull
@@ -193,7 +158,29 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
         // start connecting the BluetoothGatt
         // note: Due to different Android BLE stack implementations it is not certain whether `connectGatt()` or `BluetoothGattCallback`
         // will emit BluetoothGatt first
-        return connectGatt()
+        return Observable.fromCallable(
+                new Callable<BluetoothGatt>() {
+                    @Override
+                    public BluetoothGatt call() throws Exception {
+                        return connectionCompat.connectGatt(bluetoothDevice, autoConnect, rxBleGattCallback.getBluetoothGattCallback());
+                    }
+                }
+        )
+                .mergeWith(rxBleGattCallback.getBluetoothGatt())
+                // relay BluetoothGatt instance updates
+                .doOnNext(new Action1<BluetoothGatt>() {
+                    @Override
+                    public void call(BluetoothGatt gatt) {
+                        bluetoothGattBehaviorSubject.onNext(gatt);
+                    }
+                })
+                // finish relaying if there won't be more updates
+                .doOnTerminate(new Action0() {
+                    @Override
+                    public void call() {
+                        bluetoothGattBehaviorSubject.onCompleted();
+                    }
+                })
                 // disconnect may happen even if the connection was not established yet
                 .mergeWith(rxBleGattCallback.<BluetoothGatt>observeDisconnect())
                 // capture BluetoothGatt when connected
@@ -205,23 +192,24 @@ public class RxBleRadioOperationConnect extends RxBleRadioOperation<BluetoothGat
                                 return rxBleConnectionState == CONNECTED;
                             }
                         }))
-                .take(1);
+                .take(1)
+                // finish relaying if there won't be more updates
+                .doOnTerminate(new Action0() {
+                    @Override
+                    public void call() {
+                        bluetoothGattBehaviorSubject.onCompleted();
+                    }
+                });
     }
 
-    @NonNull
-    private Observable<BluetoothGatt> connectGatt() {
-        return Observable.fromCallable(
-                new Callable<BluetoothGatt>() {
-                    @Override
-                    public BluetoothGatt call() throws Exception {
-                        final BluetoothGatt bluetoothGatt = connectionCompat
-                                .connectGatt(bluetoothDevice, autoConnect, rxBleGattCallback.getBluetoothGattCallback());
-                        // Capture BluetoothGatt when connection is initiated.
-                        bluetoothGattProvider.updateBluetoothGatt(bluetoothGatt);
-                        return bluetoothGatt;
-                    }
-                }
-        );
+    /**
+     * Obtain observable emitting most recent {@link BluetoothGatt instance}.
+     * NOTE: Connection may be released and/or GATT may be closed in any point of time.
+     *
+     * @return Observable with BluetoothGatt. Most recent GATT will be emitted instantly after subscription if it is available.
+     */
+    public Observable<BluetoothGatt> getBluetoothGatt() {
+        return bluetoothGattBehaviorSubject;
     }
 
     @Override
