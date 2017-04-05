@@ -70,7 +70,7 @@ public class CustomOperationExampleActivity extends RxAppCompatActivity {
 
     private Observable<RxBleConnection> prepareConnectionObservable() {
         return bleDevice
-                .establishConnection(this, false)
+                .establishConnection(false)
                 .takeUntil(disconnectTriggerSubject)
                 .compose(bindUntilEvent(PAUSE))
                 .doOnUnsubscribe(this::clearSubscription)
@@ -165,7 +165,7 @@ public class CustomOperationExampleActivity extends RxAppCompatActivity {
                                                                  RxBleGattCallback rxBleGattCallback) {
             Observable<ByteAssociation<UUID>> onCharacteristicRead = rxBleGattCallback.getOnCharacteristicRead();
 
-            return Observable.fromEmitter(emitter -> {
+            return Observable.create(emitter -> {
                 Subscription subscription = onCharacteristicRead.subscribe(emitter);
                 emitter.setCancellation(subscription::unsubscribe);
 

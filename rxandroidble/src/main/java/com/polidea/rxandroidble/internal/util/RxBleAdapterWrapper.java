@@ -13,12 +13,15 @@ import android.support.annotation.Nullable;
 import java.util.List;
 import java.util.Set;
 
+import javax.inject.Inject;
+
 import static android.bluetooth.le.ScanCallback.SCAN_FAILED_INTERNAL_ERROR;
 
 public class RxBleAdapterWrapper {
 
     private final BluetoothAdapter bluetoothAdapter;
 
+    @Inject
     public RxBleAdapterWrapper(@Nullable BluetoothAdapter bluetoothAdapter) {
         this.bluetoothAdapter = bluetoothAdapter;
     }

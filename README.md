@@ -140,7 +140,7 @@ device.establishConnection(context, false)
 #### Read and write combined
 
 ```java
- device.establishConnection(context, false)
+device.establishConnection(context, false)
     .flatMap(rxBleConnection -> rxBleConnection.readCharacteristic(characteristicUuid)
 	    .doOnNext(bytes -> {
 	        // Process read data.
@@ -157,7 +157,7 @@ device.establishConnection(context, false)
 ```
 ### Change notifications
 ```java
- device.establishConnection(context, false)
+device.establishConnection(context, false)
     .flatMap(rxBleConnection -> rxBleConnection.setupNotification(characteristicUuid))
     .doOnNext(notificationObservable -> {
     	// Notification has been set up
@@ -207,8 +207,8 @@ Complete usage examples are located in `/sample` [GitHub repo](https://github.co
 ## Download
 ### Gradle
 
-```java
-compile "com.polidea.rxandroidble:rxandroidble:1.1.0"
+```groovy
+compile "com.polidea.rxandroidble:rxandroidble:1.2.0"
 ```
 ### Maven
 
@@ -216,9 +216,18 @@ compile "com.polidea.rxandroidble:rxandroidble:1.1.0"
 <dependency>
   <groupId>com.polidea.rxandroidble</groupId>
   <artifactId>rxandroidble</artifactId>
-  <version>1.1.0</version>
+  <version>1.2.0</version>
   <type>aar</type>
 </dependency>
+```
+
+### Snapshot
+If your are interested in cutting-edge build you can get a `SNAPSHOT` version of the library. 
+NOTE: It is built from the top of the `master` branch and a subject to more frequent changes that may break the API and/or change behavior.
+
+To be able to download it you need to add Sonatype Snapshot repository site to your `build.gradle` file:
+```groovy
+    maven { url "https://oss.sonatype.org/content/repositories/snapshots" }
 ```
 
 ## Unit testing

@@ -58,7 +58,13 @@ public class RxBleDeviceMock implements RxBleDevice {
     }
 
     @Override
+    @Deprecated
     public Observable<RxBleConnection> establishConnection(Context context, boolean autoConnect) {
+        return establishConnection(autoConnect);
+    }
+
+    @Override
+    public Observable<RxBleConnection> establishConnection(boolean autoConnect) {
         return Observable.defer(new Func0<Observable<RxBleConnection>>() {
             @Override
             public Observable<RxBleConnection> call() {
@@ -111,6 +117,11 @@ public class RxBleDeviceMock implements RxBleDevice {
     @Override
     public BluetoothDevice getBluetoothDevice() {
         throw new UnsupportedOperationException("Mock does not support returning a BluetoothDevice.");
+    }
+
+    @Override
+    public Observable<Integer> bond(Context context) {
+        throw new UnsupportedOperationException("Mock does not support bonding.");
     }
 
     @Override

@@ -1,5 +1,7 @@
 package com.polidea.rxandroidble
 
+import java.util.concurrent.Executors
+
 import android.bluetooth.BluetoothDevice
 import android.content.Context
 import com.polidea.rxandroidble.exceptions.BleScanException
@@ -43,7 +45,8 @@ class RxBleClientTest extends Specification {
                 adapterStateObservable.asObservable(),
                 uuidParserSpy,
                 locationServicesStatusMock,
-                mockDeviceProvider
+                mockDeviceProvider,
+                Executors.newSingleThreadExecutor()
         )
     }
 
