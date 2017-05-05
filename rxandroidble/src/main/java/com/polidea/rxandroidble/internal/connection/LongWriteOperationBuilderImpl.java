@@ -8,10 +8,8 @@ import com.polidea.rxandroidble.internal.RxBleRadio;
 import com.polidea.rxandroidble.internal.operations.OperationsProvider;
 
 import java.util.UUID;
-import java.util.concurrent.Callable;
 
 import javax.inject.Inject;
-import javax.inject.Named;
 
 import rx.Observable;
 import rx.functions.Func1;
@@ -23,7 +21,7 @@ public final class LongWriteOperationBuilderImpl implements RxBleConnection.Long
     private final OperationsProvider operationsProvider;
 
     private Observable<BluetoothGattCharacteristic> writtenCharacteristicObservable;
-    private Callable<Integer> maxBatchSizeCallable;
+    private PayloadSizeLimitProvider maxBatchSizeProvider;
     private RxBleConnection.WriteOperationAckStrategy writeOperationAckStrategy = new ImmediateSerializedBatchAckStrategy();
 
     private byte[] bytes;
@@ -31,12 +29,12 @@ public final class LongWriteOperationBuilderImpl implements RxBleConnection.Long
     @Inject
     LongWriteOperationBuilderImpl(
             RxBleRadio rxBleRadio,
-            @Named(ConnectionModule.CURRENT_MTU) Callable<Integer> defaultMaxBatchSizeCallable,
+            MtuBasedPayloadSizeLimit defaultMaxBatchSizeProvider,
             RxBleConnection rxBleConnection,
             OperationsProvider operationsProvider
     ) {
         this.rxBleRadio = rxBleRadio;
-        this.maxBatchSizeCallable = defaultMaxBatchSizeCallable;
+        this.maxBatchSizeProvider = defaultMaxBatchSizeProvider;
         this.rxBleConnection = rxBleConnection;
         this.operationsProvider = operationsProvider;
     }
@@ -61,12 +59,7 @@ public final class LongWriteOperationBuilderImpl implements RxBleConnection.Long
 
     @Override
     public RxBleConnection.LongWriteOperationBuilder setMaxBatchSize(final int maxBatchSize) {
-        this.maxBatchSizeCallable = new Callable<Integer>() {
-            @Override
-            public Integer call() throws Exception {
-                return maxBatchSize;
-            }
-        };
+        this.maxBatchSizeProvider = new ConstantPayloadSizeLimit(maxBatchSize);
         return this;
     }
 
@@ -92,7 +85,7 @@ public final class LongWriteOperationBuilderImpl implements RxBleConnection.Long
             public Observable<byte[]> call(BluetoothGattCharacteristic bluetoothGattCharacteristic) {
                 return rxBleRadio.queue(
                         operationsProvider.provideLongWriteOperation(bluetoothGattCharacteristic,
-                                writeOperationAckStrategy, maxBatchSizeCallable, bytes)
+                                writeOperationAckStrategy, maxBatchSizeProvider, bytes)
                 );
             }
         });

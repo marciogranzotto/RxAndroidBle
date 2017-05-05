@@ -1,12 +1,12 @@
 package com.polidea.rxandroidble;
 
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGattCallback;
-import android.content.Context;
-
 import com.polidea.rxandroidble.exceptions.BleDisconnectedException;
 import com.polidea.rxandroidble.exceptions.BleGattCallbackTimeoutException;
 import com.polidea.rxandroidble.exceptions.BleGattException;
+
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGattCallback;
+import android.content.Context;
 
 import rx.Observable;
 
@@ -98,5 +98,5 @@ public interface RxBleDevice {
      */
     BluetoothDevice getBluetoothDevice();
 
-    Observable<Integer> bond(final Context context);
+    Observable<Integer> bond(Context context);
 }

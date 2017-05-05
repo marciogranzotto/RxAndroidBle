@@ -1,5 +1,10 @@
 package com.polidea.rxandroidble;
 
+import com.polidea.rxandroidble.helpers.LocationServicesOkObservable;
+import com.polidea.rxandroidble.internal.DeviceComponent;
+import com.polidea.rxandroidble.internal.RxBleRadio;
+import com.polidea.rxandroidble.internal.radio.RxBleRadioImpl;
+
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
@@ -7,17 +12,14 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.os.Build;
-
-import com.polidea.rxandroidble.helpers.LocationServicesOkObservable;
-import com.polidea.rxandroidble.internal.DeviceComponent;
-import com.polidea.rxandroidble.internal.RxBleRadio;
-import com.polidea.rxandroidble.internal.radio.RxBleRadioImpl;
+import android.support.annotation.Nullable;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import javax.inject.Named;
 
+import dagger.Binds;
 import dagger.Component;
 import dagger.Module;
 import dagger.Provides;
@@ -27,7 +29,7 @@ import rx.android.schedulers.AndroidSchedulers;
 import rx.schedulers.Schedulers;
 
 @ClientScope
-@Component(modules = {ClientComponent.ClientModule.class})
+@Component(modules = {ClientComponent.ClientModule.class, ClientComponent.ClientModuleBinder.class})
 public interface ClientComponent {
 
     class NamedSchedulers {
@@ -67,43 +69,39 @@ public interface ClientComponent {
         }
 
         @Provides
-        Observable<RxBleAdapterStateObservable.BleAdapterState> provideBleAdapterState(RxBleAdapterStateObservable stateObservable) {
-            return stateObservable;
-        }
-
-        @Provides
         BluetoothManager provideBluetoothManager() {
             return (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         }
 
         @Provides
-        BluetoothAdapter provideBlutetoothAdapter() {
+        @Nullable
+        static BluetoothAdapter provideBluetoothAdapter() {
             return BluetoothAdapter.getDefaultAdapter();
         }
 
         @Provides
         @Named(NamedSchedulers.COMPUTATION)
-        Scheduler provideComputationScheduler() {
+        static Scheduler provideComputationScheduler() {
             return Schedulers.computation();
         }
 
         @Provides
         @Named(PlatformConstants.INT_DEVICE_SDK)
-        int provideDeviceSdk() {
+        static int provideDeviceSdk() {
             return Build.VERSION.SDK_INT;
         }
 
         @Provides
         @Named(NamedSchedulers.GATT_CALLBACK)
         @ClientScope
-        ExecutorService provideGattCallbackExecutorService() {
+        static ExecutorService provideGattCallbackExecutorService() {
             return Executors.newSingleThreadExecutor();
         }
 
         @Provides
         @Named(NamedSchedulers.GATT_CALLBACK)
         @ClientScope
-        Scheduler provideGattCallbackScheduler(@Named(NamedSchedulers.GATT_CALLBACK) ExecutorService executorService) {
+        static Scheduler provideGattCallbackScheduler(@Named(NamedSchedulers.GATT_CALLBACK) ExecutorService executorService) {
             return Schedulers.from(executorService);
         }
 
@@ -114,20 +112,8 @@ public interface ClientComponent {
 
         @Provides
         @Named(NamedSchedulers.MAIN_THREAD)
-        Scheduler provideMainThreadScheduler() {
+        static Scheduler provideMainThreadScheduler() {
             return AndroidSchedulers.mainThread();
-        }
-
-        @Provides
-        @ClientScope
-        RxBleClient provideRxBleClient(RxBleClientImpl rxBleClient) {
-            return rxBleClient;
-        }
-
-        @Provides
-        @ClientScope
-        RxBleRadio provideRxBleRadio(RxBleRadioImpl rxBleRadio) {
-            return rxBleRadio;
         }
 
         @Provides
@@ -147,18 +133,29 @@ public interface ClientComponent {
             return deviceSdk >= Build.VERSION_CODES.KITKAT_WATCH
                     && context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WATCH);
         }
+    }
 
-        @Provides
+    @Module
+    abstract class ClientModuleBinder {
+
+        @Binds
+        abstract Observable<RxBleAdapterStateObservable.BleAdapterState> bindStateObs(RxBleAdapterStateObservable stateObservable);
+
+        @Binds
+        @ClientScope
+        abstract RxBleClient bindRxBleClient(RxBleClientImpl rxBleClient);
+
+        @Binds
+        @ClientScope
+        abstract RxBleRadio bindRxBleRadio(RxBleRadioImpl rxBleRadio);
+
+        @Binds
         @Named(NamedSchedulers.RADIO_OPERATIONS)
-        Scheduler providesCallbackScheduler(@Named(NamedSchedulers.MAIN_THREAD) Scheduler mainThreadScheduler) {
-            return mainThreadScheduler;
-        }
+        abstract Scheduler bindCallbackScheduler(@Named(NamedSchedulers.MAIN_THREAD) Scheduler mainThreadScheduler);
 
-        @Provides
+        @Binds
         @Named(NamedSchedulers.TIMEOUT)
-        Scheduler providesTimeoutScheduler(@Named(NamedSchedulers.COMPUTATION) Scheduler computationScheduler) {
-            return computationScheduler;
-        }
+        abstract Scheduler bindTimeoutScheduler(@Named(NamedSchedulers.COMPUTATION) Scheduler computationScheduler);
     }
 
     LocationServicesOkObservable locationServicesOkObservable();

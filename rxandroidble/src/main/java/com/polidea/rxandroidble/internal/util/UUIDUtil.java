@@ -22,8 +22,12 @@ import java.util.UUID;
 import javax.inject.Inject;
 
 /**
+ * Internal helper class for extracting list of Service UUIDs from Advertisement data
+ *
  * @link http://stackoverflow.com/questions/31668791/how-can-i-read-uuids-from-advertisement-data-ios-overflow-area-in-android
+ * @deprecated use {@link com.polidea.rxandroidble.helpers.AdvertisedServiceUUIDExtractor} instead. This class may change in later releases.
  */
+@Deprecated
 public class UUIDUtil {
 
     // The following data type values are assigned by Bluetooth SIG.

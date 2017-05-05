@@ -1,12 +1,5 @@
 package com.polidea.rxandroidble;
 
-import android.annotation.TargetApi;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.le.ScanSettings;
-import android.os.Build;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-
 import com.polidea.rxandroidble.RxBleAdapterStateObservable.BleAdapterState;
 import com.polidea.rxandroidble.exceptions.BleScanException;
 import com.polidea.rxandroidble.internal.RxBleDeviceProvider;
@@ -18,6 +11,13 @@ import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationScanV21;
 import com.polidea.rxandroidble.internal.util.LocationServicesStatus;
 import com.polidea.rxandroidble.internal.util.RxBleAdapterWrapper;
 import com.polidea.rxandroidble.internal.util.UUIDUtil;
+
+import android.annotation.TargetApi;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.le.ScanSettings;
+import android.os.Build;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -31,6 +31,7 @@ import javax.inject.Named;
 
 import rx.Observable;
 import rx.functions.Action0;
+import rx.functions.Func0;
 import rx.functions.Func1;
 
 class RxBleClientImpl extends RxBleClient {
@@ -60,6 +61,7 @@ class RxBleClientImpl extends RxBleClient {
         this.rxBleDeviceProvider = rxBleDeviceProvider;
         this.executorService = executorService;
     }
+
     @Override
     protected void finalize() throws Throwable {
         super.finalize();
@@ -68,11 +70,13 @@ class RxBleClientImpl extends RxBleClient {
 
     @Override
     public RxBleDevice getBleDevice(@NonNull String macAddress) {
+        guardBluetoothAdapterAvailable();
         return rxBleDeviceProvider.getBleDevice(macAddress);
     }
 
     @Override
     public Set<RxBleDevice> getBondedDevices() {
+        guardBluetoothAdapterAvailable();
         Set<RxBleDevice> rxBleDevices = new HashSet<>();
         Set<BluetoothDevice> bluetoothDevices = rxBleAdapterWrapper.getBondedDevices();
         for (BluetoothDevice bluetoothDevice : bluetoothDevices) {
@@ -83,24 +87,34 @@ class RxBleClientImpl extends RxBleClient {
     }
 
     @Override
-    public Observable<RxBleScanResult> scanBleDevices(@Nullable UUID... filterServiceUUIDs) {
+    public Observable<RxBleScanResult> scanBleDevices(@Nullable final UUID... filterServiceUUIDs) {
         return scanBleDevices(null, filterServiceUUIDs);
     }
 
     @TargetApi(Build.VERSION_CODES.LOLLIPOP)
     @Override
-    public Observable<RxBleScanResult> scanBleDevices(@NonNull ScanSettings settings, @Nullable UUID... filterServiceUUIDs) {
-        if (!rxBleAdapterWrapper.hasBluetoothAdapter()) {
-            return Observable.error(new BleScanException(BleScanException.BLUETOOTH_NOT_AVAILABLE));
-        } else if (!rxBleAdapterWrapper.isBluetoothEnabled()) {
-            return Observable.error(new BleScanException(BleScanException.BLUETOOTH_DISABLED));
-        } else if (!locationServicesStatus.isLocationPermissionOk()) {
-            return Observable.error(new BleScanException(BleScanException.LOCATION_PERMISSION_MISSING));
-        } else if (!locationServicesStatus.isLocationProviderOk()) {
-            return Observable.error(new BleScanException(BleScanException.LOCATION_SERVICES_DISABLED));
-        } else {
-            return initializeScan(settings, filterServiceUUIDs);
-        }
+    public Observable<RxBleScanResult> scanBleDevices(@NonNull final ScanSettings settings,
+            @Nullable final UUID... filterServiceUUIDs) {
+        return Observable.defer(new Func0<Observable<RxBleScanResult>>() {
+            @Override
+            public Observable<RxBleScanResult> call() {
+                if (!rxBleAdapterWrapper.hasBluetoothAdapter()) {
+                    return Observable
+                            .error(new BleScanException(BleScanException.BLUETOOTH_NOT_AVAILABLE));
+                } else if (!rxBleAdapterWrapper.isBluetoothEnabled()) {
+                    return Observable
+                            .error(new BleScanException(BleScanException.BLUETOOTH_DISABLED));
+                } else if (!locationServicesStatus.isLocationPermissionOk()) {
+                    return Observable.error(new BleScanException(
+                            BleScanException.LOCATION_PERMISSION_MISSING));
+                } else if (!locationServicesStatus.isLocationProviderOk()) {
+                    return Observable.error(new BleScanException(
+                            BleScanException.LOCATION_SERVICES_DISABLED));
+                } else {
+                    return initializeScan(settings, filterServiceUUIDs);
+                }
+            }
+        });
     }
 
     private Observable<RxBleScanResult> initializeScan(ScanSettings settings, @Nullable UUID[] filterServiceUUIDs) {
@@ -169,6 +183,13 @@ class RxBleClientImpl extends RxBleClient {
                     }
                 })
                 .share();
+    }
+
+    private void guardBluetoothAdapterAvailable() {
+        if (!rxBleAdapterWrapper.hasBluetoothAdapter()) {
+            throw new UnsupportedOperationException("RxAndroidBle library needs a BluetoothAdapter to be available in the system to work."
+            + " If this is a test on an emulator then you can use 'https://github.com/Polidea/RxAndroidBle/tree/master/mockrxandroidble'");
+        }
     }
 
     private RxBleScanResult convertToPublicScanResult(RxBleInternalScanResultV21 scanResult) {
