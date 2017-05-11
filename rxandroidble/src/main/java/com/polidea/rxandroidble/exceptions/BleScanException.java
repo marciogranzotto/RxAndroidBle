@@ -10,9 +10,6 @@ import java.lang.annotation.RetentionPolicy;
  */
 public class BleScanException extends BleException {
 
-    /**
-     * @hide
-     */
     @IntDef({BLUETOOTH_CANNOT_START, BLUETOOTH_DISABLED, BLUETOOTH_NOT_AVAILABLE, LOCATION_PERMISSION_MISSING, LOCATION_SERVICES_DISABLED})
     @Retention(RetentionPolicy.SOURCE)
     public @interface Reason {
@@ -50,8 +47,13 @@ public class BleScanException extends BleException {
     @Reason
     private final int reason;
 
-    public BleScanException(int cause) {
-        this.reason = cause;
+    public BleScanException(@Reason int reason) {
+        this.reason = reason;
+    }
+
+    public BleScanException(@Reason int reason, Throwable causeException) {
+        super(causeException);
+        this.reason = reason;
     }
 
     /**
@@ -69,6 +71,7 @@ public class BleScanException extends BleException {
     public String toString() {
         return "BleScanException{"
                 + "reason=" + reasonDescription()
+                + toStringCauseIfExists()
                 + '}';
     }
 

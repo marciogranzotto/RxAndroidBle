@@ -1,10 +1,6 @@
 package com.polidea.rxandroidble
 
-import static com.polidea.rxandroidble.exceptions.BleScanException.BLUETOOTH_CANNOT_START
-import static com.polidea.rxandroidble.exceptions.BleScanException.BLUETOOTH_DISABLED
-import static com.polidea.rxandroidble.exceptions.BleScanException.BLUETOOTH_NOT_AVAILABLE
-import static com.polidea.rxandroidble.exceptions.BleScanException.LOCATION_PERMISSION_MISSING
-import static com.polidea.rxandroidble.exceptions.BleScanException.LOCATION_SERVICES_DISABLED
+import java.util.concurrent.Executors
 
 import android.bluetooth.BluetoothDevice
 import android.content.Context
@@ -15,9 +11,13 @@ import com.polidea.rxandroidble.internal.RxBleRadioOperation
 import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationScan
 import com.polidea.rxandroidble.internal.util.UUIDUtil
 import rx.Observable
+import rx.Scheduler
 import rx.observers.TestSubscriber
+import rx.schedulers.Schedulers
 import spock.lang.Specification
 import spock.lang.Unroll
+
+import static com.polidea.rxandroidble.exceptions.BleScanException.*
 
 class RxBleClientTest extends Specification {
 
@@ -27,7 +27,7 @@ class RxBleClientTest extends Specification {
     UUIDUtil uuidParserSpy = Spy UUIDUtil
     MockRxBleAdapterWrapper bleAdapterWrapperSpy = Spy MockRxBleAdapterWrapper
     MockRxBleAdapterStateObservable adapterStateObservable = Spy MockRxBleAdapterStateObservable
-    MockLocationServicesStatus locationServicesStatusMock = new MockLocationServicesStatus()
+    MockLocationServicesStatus locationServicesStatusMock = Spy MockLocationServicesStatus
     RxBleDeviceProvider mockDeviceProvider = Mock RxBleDeviceProvider
     private static someUUID = UUID.randomUUID()
     private static otherUUID = UUID.randomUUID()
@@ -45,7 +45,8 @@ class RxBleClientTest extends Specification {
                 adapterStateObservable.asObservable(),
                 uuidParserSpy,
                 locationServicesStatusMock,
-                mockDeviceProvider
+                mockDeviceProvider,
+                Executors.newSingleThreadExecutor()
         )
     }
 
@@ -72,6 +73,73 @@ class RxBleClientTest extends Specification {
 
         then:
         1 * bleAdapterWrapperSpy.startLeScan(_) >> true
+    }
+
+    def "should check if all the conditions are met at the time of each subscription"() {
+        given:
+        def firstSubscriber = new TestSubscriber<>()
+        def secondSubscriber = new TestSubscriber<>()
+        bleAdapterWrapperSpy.hasBluetoothAdapter() >> bluetoothAvailable >> true
+        bleAdapterWrapperSpy.isBluetoothEnabled() >> bluetoothEnabled >> true
+        locationServicesStatusMock.isLocationPermissionOk() >> locationPermissionsOk >> true
+        locationServicesStatusMock.isLocationProviderOk() >> locationProviderOk >> true
+        def scanObservable = objectUnderTest.scanBleDevices(null)
+
+        when:
+        scanObservable.subscribe(firstSubscriber)
+
+        then:
+        firstSubscriber.assertError {
+            BleScanException exception -> exception.reason == reason
+        }
+
+        when:
+        scanObservable.subscribe(secondSubscriber)
+
+        then:
+        secondSubscriber.assertNoErrors()
+        1 * bleAdapterWrapperSpy.startLeScan(_) >> true
+
+        where:
+        bluetoothAvailable | bluetoothEnabled | locationPermissionsOk | locationProviderOk | reason
+        false              | true             | true                  | true               | BLUETOOTH_NOT_AVAILABLE
+        true               | false            | true                  | true               | BLUETOOTH_DISABLED
+        true               | true             | false                 | true               | LOCATION_PERMISSION_MISSING
+        true               | true             | true                  | false              | LOCATION_SERVICES_DISABLED
+    }
+
+
+    def "should not start if all the conditions are not met at the time of subscription"() {
+        given:
+        def firstSubscriber = new TestSubscriber<>()
+        def secondSubscriber = new TestSubscriber<>()
+        bleAdapterWrapperSpy.hasBluetoothAdapter() >> true >> bluetoothAvailable
+        bleAdapterWrapperSpy.isBluetoothEnabled() >> true >> bluetoothEnabled
+        locationServicesStatusMock.isLocationPermissionOk() >> true >> locationPermissionsOk
+        locationServicesStatusMock.isLocationProviderOk() >> true >> locationProviderOk
+        def scanObservable = objectUnderTest.scanBleDevices(null)
+
+        when:
+        scanObservable.subscribe(firstSubscriber)
+
+        then:
+        firstSubscriber.assertNoErrors()
+        1 * bleAdapterWrapperSpy.startLeScan(_) >> true
+
+        when:
+        scanObservable.subscribe(secondSubscriber)
+
+        then:
+        secondSubscriber.assertError {
+            BleScanException exception -> exception.reason == reason
+        }
+
+        where:
+        bluetoothAvailable | bluetoothEnabled | locationPermissionsOk | locationProviderOk | reason
+        false              | true             | true                  | true               | BLUETOOTH_NOT_AVAILABLE
+        true               | false            | true                  | true               | BLUETOOTH_DISABLED
+        true               | true             | false                 | true               | LOCATION_PERMISSION_MISSING
+        true               | true             | true                  | false              | LOCATION_SERVICES_DISABLED
     }
 
     def "should not start scan until observable is subscribed"() {
@@ -375,6 +443,10 @@ class RxBleClientTest extends Specification {
         }
         def scanTestRadio = new RxBleRadio() {
 
+            def Scheduler scheduler() {
+                return Schedulers.immediate()
+            }
+
             @Override
             def <T> Observable<T> queue(RxBleRadioOperation<T> rxBleRadioOperation) {
                 return rxBleRadioOperation
@@ -405,6 +477,30 @@ class RxBleClientTest extends Specification {
 
         then:
         1 * bleAdapterWrapperSpy.stopLeScan(_)
+    }
+
+    def "should throw UnsupportedOperationException if .getBleDevice() is called on system that has no Bluetooth capabilities"() {
+
+        given:
+        bleAdapterWrapperSpy.hasBluetoothAdapter() >> false
+
+        when:
+        objectUnderTest.getBleDevice("AA:BB:CC:DD:EE:FF")
+
+        then:
+        thrown UnsupportedOperationException
+    }
+
+    def "should throw UnsupportedOperationException if .getBondedDevices() is called on system that has no Bluetooth capabilities"() {
+
+        given:
+        bleAdapterWrapperSpy.hasBluetoothAdapter() >> false
+
+        when:
+        objectUnderTest.getBondedDevices()
+
+        then:
+        thrown UnsupportedOperationException
     }
 
     public waitForThreadsToCompleteWork() {

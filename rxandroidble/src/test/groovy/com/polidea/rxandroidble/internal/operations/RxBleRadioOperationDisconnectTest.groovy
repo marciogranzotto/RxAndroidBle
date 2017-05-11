@@ -1,15 +1,12 @@
 package com.polidea.rxandroidble.internal.operations
 
-import static android.bluetooth.BluetoothProfile.*
-import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.*
-
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothManager
 import com.polidea.rxandroidble.RxBleConnection
+import com.polidea.rxandroidble.internal.connection.BluetoothGattProvider
 import com.polidea.rxandroidble.internal.connection.RxBleGattCallback
-import java.util.concurrent.Semaphore
-import java.util.concurrent.atomic.AtomicReference
+import com.polidea.rxandroidble.internal.util.MockOperationTimeoutConfiguration
 import rx.Scheduler
 import rx.android.plugins.RxAndroidPlugins
 import rx.android.plugins.RxAndroidSchedulersHook
@@ -21,24 +18,22 @@ import rx.subjects.PublishSubject
 import spock.lang.Specification
 import spock.lang.Unroll
 
+import java.util.concurrent.Semaphore
+
+import static android.bluetooth.BluetoothProfile.*
+import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.*
+
 public class RxBleRadioOperationDisconnectTest extends Specification {
 
     BluetoothDevice mockDevice = Mock BluetoothDevice
-
+    String mockMacAddress = "mockMackAddress"
     Semaphore mockSemaphore = Mock Semaphore
-
     BluetoothManager mockBluetoothManager = Mock BluetoothManager
-
     BluetoothGatt mockBluetoothGatt = Mock BluetoothGatt
-
     RxBleGattCallback mockGattCallback = Mock RxBleGattCallback
-
-    AtomicReference<BluetoothGatt> gattAtomicReference = new AtomicReference<BluetoothGatt>(mockBluetoothGatt)
-
     PublishSubject<RxBleConnection.RxBleConnectionState> connectionStatePublishSubject = PublishSubject.create()
-
     TestSubscriber<Void> testSubscriber = new TestSubscriber()
-
+    BluetoothGattProvider mockBluetoothGattProvider
     RxBleRadioOperationDisconnect objectUnderTest
 
     def setupSpec() {
@@ -60,7 +55,9 @@ public class RxBleRadioOperationDisconnectTest extends Specification {
         RxAndroidPlugins.getInstance().reset()
     }
 
-    def setup() {
+    private def testWithGattProviderReturning(BluetoothGatt providedBluetoothGatt) {
+        mockBluetoothGattProvider = Mock(BluetoothGattProvider)
+        mockBluetoothGattProvider.getBluetoothGatt() >> providedBluetoothGatt
         mockGattCallback.getOnConnectionStateChange() >> connectionStatePublishSubject
         mockBluetoothGatt.getDevice() >> mockDevice
         prepareObjectUnderTest()
@@ -69,7 +66,7 @@ public class RxBleRadioOperationDisconnectTest extends Specification {
     def "should complete if AtomicReference<BluetoothGatt> contains null and then release the radio"() {
 
         given:
-        gattAtomicReference.set(null)
+        testWithGattProviderReturning(null)
 
         when:
         objectUnderTest.run()
@@ -78,12 +75,14 @@ public class RxBleRadioOperationDisconnectTest extends Specification {
         testSubscriber.assertCompleted()
 
         then:
+        mockBluetoothGattProvider.getBluetoothGatt() >> null
         1 * mockSemaphore.release()
     }
 
     def "should call BluetoothGatt.close() if BluetoothGatt is disconnected at the time of running and then release the radio"() {
 
         given:
+        testWithGattProviderReturning(mockBluetoothGatt)
         mockBluetoothManager.getConnectionState(mockDevice, GATT) >> STATE_DISCONNECTED
 
         when:
@@ -100,6 +99,7 @@ public class RxBleRadioOperationDisconnectTest extends Specification {
     def "should call BluetoothGatt.disconnect() if BluetoothGatt is not disconnected at the time of running and then BluetoothGatt.close() when RxBleGattCallback.getOnConnectionStateChange() will emit RxBleConnection.RxBleConnectionState.DISCONNECTED and then release the radio"() {
 
         given:
+        testWithGattProviderReturning(mockBluetoothGatt)
         mockBluetoothManager.getConnectionState(mockDevice, GATT) >> initialState
 
         when:
@@ -134,7 +134,8 @@ public class RxBleRadioOperationDisconnectTest extends Specification {
     }
 
     private prepareObjectUnderTest() {
-        objectUnderTest = new RxBleRadioOperationDisconnect(mockGattCallback, gattAtomicReference, mockBluetoothManager, ImmediateScheduler.INSTANCE)
+        objectUnderTest = new RxBleRadioOperationDisconnect(mockGattCallback, mockBluetoothGattProvider, mockMacAddress,
+                mockBluetoothManager, ImmediateScheduler.INSTANCE, new MockOperationTimeoutConfiguration(Schedulers.computation()))
         objectUnderTest.setRadioBlockingSemaphore(mockSemaphore)
         objectUnderTest.asObservable().subscribe(testSubscriber)
     }

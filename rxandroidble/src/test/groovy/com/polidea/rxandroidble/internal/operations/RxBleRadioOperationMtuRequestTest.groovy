@@ -1,42 +1,30 @@
 package com.polidea.rxandroidble.internal.operations
 
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattService
-import com.polidea.rxandroidble.RxBleDeviceServices
 import com.polidea.rxandroidble.exceptions.BleGattCannotStartException
+import com.polidea.rxandroidble.exceptions.BleGattCallbackTimeoutException
 import com.polidea.rxandroidble.exceptions.BleGattOperationType
 import com.polidea.rxandroidble.internal.connection.RxBleGattCallback
-import rx.Observable
+import com.polidea.rxandroidble.internal.util.MockOperationTimeoutConfiguration
 import rx.observers.TestSubscriber
-import rx.schedulers.Schedulers
 import rx.schedulers.TestScheduler
 import rx.subjects.PublishSubject
 import spock.lang.Specification
 
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 
 public class RxBleRadioOperationMtuRequestTest extends Specification {
 
     static long timeout = 10
-
     static TimeUnit timeoutTimeUnit = TimeUnit.SECONDS
-
     Semaphore mockSemaphore = Mock Semaphore
-
     BluetoothGatt mockBluetoothGatt = Mock BluetoothGatt
-
     RxBleGattCallback mockGattCallback = Mock RxBleGattCallback
-
     TestSubscriber<Integer> testSubscriber = new TestSubscriber()
-
     TestScheduler testScheduler = new TestScheduler()
-
     PublishSubject<Integer> changedMtuPublishSubject = PublishSubject.create()
-
     RxBleRadioOperationMtuRequest objectUnderTest
-
     int mtu = 72
 
     def setup() {
@@ -100,11 +88,17 @@ public class RxBleRadioOperationMtuRequestTest extends Specification {
         testScheduler.advanceTimeTo(timeout + 5, timeoutTimeUnit)
 
         then:
-        testSubscriber.assertError(TimeoutException)
+        testSubscriber.assertError(BleGattCallbackTimeoutException)
+
+        and:
+        testSubscriber.assertError {
+            ((BleGattCallbackTimeoutException)it).getBleGattOperationType() == BleGattOperationType.ON_MTU_CHANGED
+        }
     }
 
     private prepareObjectUnderTest() {
-        objectUnderTest = new RxBleRadioOperationMtuRequest(72, mockGattCallback, mockBluetoothGatt,timeout, timeoutTimeUnit, testScheduler)
+        objectUnderTest = new RxBleRadioOperationMtuRequest(mockGattCallback, mockBluetoothGatt,
+                new MockOperationTimeoutConfiguration(timeout.intValue(), testScheduler), mtu)
         objectUnderTest.setRadioBlockingSemaphore(mockSemaphore)
         objectUnderTest.asObservable().subscribe(testSubscriber)
     }

@@ -48,7 +48,7 @@ For further BLE interactions the connection is required.
 String macAddress = "AA:BB:CC:DD:EE:FF";
 RxBleDevice device = rxBleClient.getBleDevice(macAddress);
 
-Subscription subscription = device.establishConnection(context, false) // <-- autoConnect flag
+Subscription subscription = device.establishConnection(false) // <-- autoConnect flag
 	.subscribe(
 	    rxBleConnection -> {
 		    // All GATT operations are done through the rxBleConnection.
@@ -75,7 +75,7 @@ Be careful not to overuse the autoConnect flag. On the other side it has negativ
 ### Read / write operations
 #### Read
 ```java
-device.establishConnection(context, false)
+device.establishConnection(false)
 	.flatMap(rxBleConnection -> rxBleConnection.readCharacteristic(characteristicUUID))
 	.subscribe(
 	    characteristicValue -> {
@@ -89,7 +89,7 @@ device.establishConnection(context, false)
 ```
 #### Write
 ```java
-device.establishConnection(context, false)
+device.establishConnection(false)
 	.flatMap(rxBleConnection -> rxBleConnection.writeCharacteristic(characteristicUUID, bytesToWrite))
 	.subscribe(
 	    characteristicValue -> {
@@ -102,7 +102,7 @@ device.establishConnection(context, false)
 ```
 #### Multiple reads
 ```java
- device.establishConnection(context, false)
+device.establishConnection(false)
     .flatMap(rxBleConnection -> Observable.combineLatest(
         rxBleConnection.readCharacteristic(firstUUID),
         rxBleConnection.readCharacteristic(secondUUID),
@@ -117,10 +117,30 @@ device.establishConnection(context, false)
         }
     );
 ```
+#### Long write
+```java
+device.establishConnection(false)
+    .flatMap(rxBleConnection -> rxBleConnection.createNewLongWriteBuilder()
+            .setCharacteristicUuid(uuid) // required or the .setCharacteristic()
+            // .setCharacteristic() alternative if you have a specific BluetoothGattCharacteristic
+            .setBytes(byteArray)
+            // .setMaxBatchSize(maxBatchSize) // optional -> default 20 or current MTU
+            // .setWriteOperationAckStrategy(ackStrategy) // optional to postpone writing next batch
+            .build()
+    )
+    .subscribe(
+            byteArray -> {
+                // Written data.
+            },
+            throwable -> {
+                // Handle an error here.
+            }
+    );
+```
 #### Read and write combined
 
 ```java
- device.establishConnection(context, false)
+device.establishConnection(false)
     .flatMap(rxBleConnection -> rxBleConnection.readCharacteristic(characteristicUuid)
 	    .doOnNext(bytes -> {
 	        // Process read data.
@@ -137,7 +157,7 @@ device.establishConnection(context, false)
 ```
 ### Change notifications
 ```java
- device.establishConnection(context, false)
+device.establishConnection(false)
     .flatMap(rxBleConnection -> rxBleConnection.setupNotification(characteristicUuid))
     .doOnNext(notificationObservable -> {
     	// Notification has been set up
@@ -177,6 +197,8 @@ RxBleClient.setLogLevel(RxBleLog.DEBUG);
 ### Error handling
 Every error you may encounter is provided via onError callback. Each public method has JavaDoc explaining possible errors.
 
+### Helpers
+We encourage you to check the package `com.polidea.rxandroidble.helpers` which contains handy reactive wrappers for some typical use-cases.
 
 ## More examples
 
@@ -185,8 +207,8 @@ Complete usage examples are located in `/sample` [GitHub repo](https://github.co
 ## Download
 ### Gradle
 
-```java
-compile "com.polidea.rxandroidble:rxandroidble:1.1.0"
+```groovy
+compile "com.polidea.rxandroidble:rxandroidble:1.2.2"
 ```
 ### Maven
 
@@ -194,9 +216,18 @@ compile "com.polidea.rxandroidble:rxandroidble:1.1.0"
 <dependency>
   <groupId>com.polidea.rxandroidble</groupId>
   <artifactId>rxandroidble</artifactId>
-  <version>1.1.0</version>
+  <version>1.2.2</version>
   <type>aar</type>
 </dependency>
+```
+
+### Snapshot
+If your are interested in cutting-edge build you can get a `SNAPSHOT` version of the library. 
+NOTE: It is built from the top of the `master` branch and a subject to more frequent changes that may break the API and/or change behavior.
+
+To be able to download it you need to add Sonatype Snapshot repository site to your `build.gradle` file:
+```groovy
+    maven { url "https://oss.sonatype.org/content/repositories/snapshots" }
 ```
 
 ## Unit testing
@@ -214,6 +245,7 @@ When submitting code, please make every effort to follow existing conventions an
 * Michał Zieliński (michal.zielinski@polidea.com)
 * Fracturedpsyche (https://github.com/fracturedpsyche)
 * Andrea Pregnolato (https://github.com/pregno)
+* Matthieu Vachon (https://github.com/maoueh) - custom operations, yay!
 
 ## License
 

@@ -5,21 +5,26 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothGattService
 import android.os.Build
-import com.polidea.rxandroidble.BuildConfig
-import com.polidea.rxandroidble.FlatRxBleRadio
-import com.polidea.rxandroidble.RxBleConnection
-import com.polidea.rxandroidble.RxBleDeviceServices
+import android.support.annotation.NonNull
+import com.polidea.rxandroidble.*
 import com.polidea.rxandroidble.exceptions.*
+import com.polidea.rxandroidble.internal.operations.OperationsProviderImpl
+import com.polidea.rxandroidble.internal.operations.RxBleRadioOperationReadRssi
 import com.polidea.rxandroidble.internal.util.ByteAssociation
+import com.polidea.rxandroidble.internal.util.CharacteristicChangedEvent
+import java.util.concurrent.TimeUnit
+import com.polidea.rxandroidble.internal.util.MockOperationTimeoutConfiguration
 import org.robolectric.annotation.Config
 import org.robospock.GradleRoboSpecification
+import rx.Observable
+import rx.Scheduler
 import rx.observers.TestSubscriber
+import rx.schedulers.TestScheduler
 import rx.subjects.BehaviorSubject
 import rx.subjects.PublishSubject
 import spock.lang.Unroll
 
 import static com.polidea.rxandroidble.exceptions.BleGattOperationType.DESCRIPTOR_WRITE
-import static java.util.Collections.emptyList
 import static rx.Observable.from
 import static rx.Observable.just
 
@@ -36,7 +41,14 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     def flatRadio = new FlatRxBleRadio()
     def gattCallback = Mock RxBleGattCallback
     def bluetoothGattMock = Mock BluetoothGatt
-    def objectUnderTest = new RxBleConnectionImpl(flatRadio, gattCallback, bluetoothGattMock)
+    def mockServiceDiscoveryManager = Mock ServiceDiscoveryManager
+    def testScheduler = new TestScheduler()
+    def timeoutConfig = new MockOperationTimeoutConfiguration(testScheduler)
+    def operationsProviderMock = new OperationsProviderImpl(gattCallback, bluetoothGattMock, timeoutConfig, testScheduler,
+            testScheduler, { new RxBleRadioOperationReadRssi(gattCallback, bluetoothGattMock, timeoutConfig) })
+    def objectUnderTest = new RxBleConnectionImpl(flatRadio, gattCallback, bluetoothGattMock, mockServiceDiscoveryManager,
+            operationsProviderMock, { new LongWriteOperationBuilderImpl(flatRadio, { 20 }, Mock(RxBleConnection)) }, testScheduler
+    )
     def connectionStateChange = BehaviorSubject.create()
     def TestSubscriber testSubscriber
 
@@ -45,18 +57,18 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         gattCallback.getOnConnectionStateChange() >> connectionStateChange
     }
 
-    def "should emit BleGattCannotStartException if failed to start retrieving services"() {
-        given:
-        gattCallback.getOnServicesDiscovered() >> PublishSubject.create()
-        shouldGattContainNoServices()
-        shouldFailStartingDiscovery()
+    def "should proxy all calls to .discoverServices() to ServiceDiscoveryManager with proper timeouts"() {
 
         when:
-        objectUnderTest.discoverServices().subscribe(testSubscriber)
+        invokationClosure.call(objectUnderTest)
 
         then:
-        testSubscriber.assertError BleGattCannotStartException
-        testSubscriber.assertError { it.bleGattOperationType == BleGattOperationType.SERVICE_DISCOVERY }
+        1 * mockServiceDiscoveryManager.getDiscoverServicesObservable(timeout, timeoutTimeUnit) >> Observable.empty()
+
+        where:
+        timeout | timeoutTimeUnit  | invokationClosure
+        20      | TimeUnit.SECONDS | { RxBleConnection objectUnderTest -> objectUnderTest.discoverServices() }
+        2       | TimeUnit.HOURS   | { RxBleConnection objectUnderTest -> objectUnderTest.discoverServices(2, TimeUnit.HOURS) }
     }
 
     @Unroll
@@ -118,56 +130,9 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         testSubscriber.assertError { it.bleGattOperationType == BleGattOperationType.READ_RSSI }
     }
 
-    def "should return cached services during service discovery"() {
-        given:
-        def expectedServices = [Mock(BluetoothGattService), Mock(BluetoothGattService)]
-        shouldSuccessfullyStartDiscovery()
-
-        when:
-        objectUnderTest.discoverServices().subscribe() // <-- it must be here hence mocks are not configured yet in given block.
-        objectUnderTest.discoverServices().subscribe(testSubscriber)
-
-        then:
-        testSubscriber.assertServices expectedServices
-        testSubscriber.assertCompleted()
-        (_..1) * bluetoothGattMock.getServices() >> emptyList()
-        1 * gattCallback.getOnServicesDiscovered() >> just(new RxBleDeviceServices(expectedServices))
-    }
-
-    def "should return services instantly if they were already discovered and are in BluetoothGatt cache"() {
-        given:
-        def services = [Mock(BluetoothGattService), Mock(BluetoothGattService)]
-        bluetoothGattMock.getServices() >> services
-
-        when:
-        objectUnderTest.discoverServices().subscribe(testSubscriber)
-
-        then:
-        testSubscriber.assertServices services
-        testSubscriber.assertCompleted()
-        0 * bluetoothGattMock.discoverServices()
-    }
-
-    def "should try to discover services if there are no services cached within BluetoothGatt"() {
-        given:
-        def services = [Mock(BluetoothGattService), Mock(BluetoothGattService)]
-        shouldSuccessfullyStartDiscovery()
-        shouldGattContainNoServices()
-        gattCallback.getOnServicesDiscovered() >> just(new RxBleDeviceServices(services))
-
-        when:
-        objectUnderTest.discoverServices().subscribe(testSubscriber)
-
-        then:
-        testSubscriber.assertServices services
-        testSubscriber.assertCompleted()
-        1 * bluetoothGattMock.discoverServices() >> true
-    }
-
     def "should emit BleCharacteristicNotFoundException during read operation if no services were found"() {
         given:
-        shouldGattCallbackReturnServicesOnDiscovery([])
-        shouldGattContainNoServices()
+        shouldDiscoverServices([])
 
         when:
         objectUnderTest.readCharacteristic(CHARACTERISTIC_UUID).subscribe(testSubscriber)
@@ -179,8 +144,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     def "should emit BleCharacteristicNotFoundException during read operation if characteristic was not found"() {
         given:
         def service = Mock BluetoothGattService
-        shouldGattCallbackReturnServicesOnDiscovery([service])
-        shouldGattContainServices([service])
+        shouldDiscoverServices([service])
         service.getCharacteristic(_) >> null
 
         when:
@@ -196,8 +160,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         def service = Mock BluetoothGattService
         shouldServiceContainCharacteristic(service, CHARACTERISTIC_UUID, CHARACTERISTIC_INSTANCE_ID, NOT_EMPTY_DATA)
         shouldServiceContainCharacteristic(service, OTHER_UUID, OTHER_INSTANCE_ID, OTHER_DATA)
-        shouldGattCallbackReturnServicesOnDiscovery([service])
-        shouldGattContainNoServices()
+        shouldDiscoverServices([service])
         shouldGattCallbackReturnDataOnRead(
                 [uuid: OTHER_UUID, value: OTHER_DATA],
                 [uuid: CHARACTERISTIC_UUID, value: NOT_EMPTY_DATA])
@@ -211,8 +174,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
 
     def "should emit BleCharacteristicNotFoundException if there are no services during write operation"() {
         given:
-        shouldGattCallbackReturnServicesOnDiscovery([])
-        shouldGattContainNoServices()
+        shouldDiscoverServices([])
 
         when:
         objectUnderTest.writeCharacteristic(CHARACTERISTIC_UUID, NOT_EMPTY_DATA).subscribe(testSubscriber)
@@ -391,7 +353,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     }
 
     @Unroll
-    def "should register notifications correctly"() {
+    def "should register notifications according to BLE standard"() {
         given:
         def characteristic = mockCharacteristicWithValue(uuid: CHARACTERISTIC_UUID, instanceId: CHARACTERISTIC_INSTANCE_ID, value: EMPTY_DATA)
         def descriptor = mockDescriptorAndAttachToCharacteristic(characteristic)
@@ -403,7 +365,8 @@ class RxBleConnectionTest extends GradleRoboSpecification {
 
         then:
         1 * bluetoothGattMock.setCharacteristicNotification(characteristic, true) >> true
-        1 * bluetoothGattMock.writeDescriptor({ it.value == enableValue })
+        1 * bluetoothGattMock.writeDescriptor({ it.value == enableValue }) >> just(new byte[0])
+        testSubscriber.assertNoErrors()
 
         where:
         setupTriggerNotificationClosure        | enableValue
@@ -414,10 +377,35 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     }
 
     @Unroll
+    def "should register notifications according in compatibility where client descriptor is not present"() {
+        given:
+        gattCallback.getOnCharacteristicChanged() >> PublishSubject.create()
+        def characteristic = mockCharacteristicWithValue(uuid: CHARACTERISTIC_UUID, instanceId: CHARACTERISTIC_INSTANCE_ID, value: EMPTY_DATA)
+        shouldGattContainServiceWithCharacteristic(characteristic, CHARACTERISTIC_UUID)
+
+        when:
+        setupTriggerNotificationClosure.call(objectUnderTest, characteristic).flatMap({ it }).subscribe(testSubscriber)
+
+        then:
+        1 * bluetoothGattMock.setCharacteristicNotification(characteristic, true) >> true
+        0 * bluetoothGattMock.writeDescriptor() >> just(new byte[0])
+        testSubscriber.assertNoErrors()
+
+        where:
+        setupTriggerNotificationClosure << [
+                setupNotificationUuidCompatClosure,
+                setupIndicationUuidCompatClosure,
+                setupNotificationCharacteristicCompatClosure,
+                setupIndicationCharacteristicCompatClosure]
+    }
+
+    @Unroll
     def "should notify about value change and stay subscribed"() {
         given:
         def characteristic = shouldSetupCharacteristicNotificationCorrectly(CHARACTERISTIC_UUID, CHARACTERISTIC_INSTANCE_ID)
-        gattCallback.getOnCharacteristicChanged() >> from(changeNotifications.collect { ByteAssociation.create(CHARACTERISTIC_INSTANCE_ID, it) })
+        gattCallback.getOnCharacteristicChanged() >> from(changeNotifications.collect {
+            new CharacteristicChangedEvent(CHARACTERISTIC_UUID, CHARACTERISTIC_INSTANCE_ID, it)
+        })
 
         when:
         setupTriggerNotificationClosure.call(objectUnderTest, characteristic).flatMap({ it }).subscribe(testSubscriber)
@@ -440,10 +428,10 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     }
 
     @Unroll
-    def "should not notify about value change if UUID is not matching"() {
+    def "should not notify about value change if UUID and / or instanceId is not matching"() {
         given:
         def characteristic = shouldSetupCharacteristicNotificationCorrectly(CHARACTERISTIC_UUID, CHARACTERISTIC_INSTANCE_ID)
-        gattCallback.getOnCharacteristicChanged() >> just(ByteAssociation.create(OTHER_UUID, NOT_EMPTY_DATA))
+        gattCallback.getOnCharacteristicChanged() >> just(otherCharacteristicNotificationId)
 
         when:
         setupTriggerNotificationClosure.call(objectUnderTest, characteristic).flatMap({ it }).subscribe(testSubscriber)
@@ -453,12 +441,18 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         testSubscriber.assertNotCompleted()
 
         where:
-        setupTriggerNotificationClosure << [
-                setupNotificationUuidClosure,
-                setupIndicationUuidClosure,
-                setupNotificationCharacteristicClosure,
-                setupIndicationCharacteristicClosure
-        ]
+        [setupTriggerNotificationClosure, otherCharacteristicNotificationId] << [
+                [
+                        setupNotificationUuidClosure,
+                        setupIndicationUuidClosure,
+                        setupNotificationCharacteristicClosure,
+                        setupIndicationCharacteristicClosure
+                ], [
+                        new CharacteristicChangedEvent(CHARACTERISTIC_UUID, OTHER_INSTANCE_ID, NOT_EMPTY_DATA),
+                        new CharacteristicChangedEvent(OTHER_UUID, CHARACTERISTIC_INSTANCE_ID, NOT_EMPTY_DATA),
+                        new CharacteristicChangedEvent(OTHER_UUID, OTHER_INSTANCE_ID, NOT_EMPTY_DATA)
+                ]
+        ].combinations()
     }
 
     @Unroll
@@ -547,7 +541,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         setupTriggerNotificationClosure.call(objectUnderTest, characteristic).flatMap({ it }).subscribe(secondSubscriber)
 
         when:
-        characteristicChangeSubject.onNext(ByteAssociation.create(CHARACTERISTIC_INSTANCE_ID, NOT_EMPTY_DATA))
+        characteristicChangeSubject.onNext(new CharacteristicChangedEvent(CHARACTERISTIC_UUID, CHARACTERISTIC_INSTANCE_ID, NOT_EMPTY_DATA))
 
         then:
         testSubscriber.assertValue(NOT_EMPTY_DATA)
@@ -625,6 +619,80 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         setupIndicationUuidClosure             | setupNotificationCharacteristicClosure
     }
 
+    def "should pass items emitted by observable returned from RxBleRadioOperationCustom.asObservable()"() {
+        given:
+        def radioOperationCustom = customRadioOperationWithOutcome {
+            Observable.just(true, false, true)
+        }
+
+        when:
+        objectUnderTest.queue(radioOperationCustom).subscribe(testSubscriber)
+
+        then:
+        testSubscriber.assertCompleted()
+        testSubscriber.assertValues(true, false, true)
+    }
+
+    def "should pass error and release the radio if custom operation will throw out of RxBleRadioOperationCustom.asObservable()"() {
+        given:
+        def radioOperationCustom = customRadioOperationWithOutcome { throw new RuntimeException() }
+
+        when:
+        objectUnderTest.queue(radioOperationCustom).subscribe(testSubscriber)
+
+        then:
+        flatRadio.semaphore.isReleased()
+        testSubscriber.assertError(RuntimeException.class)
+    }
+
+    def "should pass error and release the radio if observable returned from RxBleRadioOperationCustom.asObservable() will emit error"() {
+        given:
+        def radioOperationCustom = customRadioOperationWithOutcome { Observable.error(new RuntimeException()) }
+
+        when:
+        objectUnderTest.queue(radioOperationCustom).subscribe(testSubscriber)
+
+        then:
+        flatRadio.semaphore.isReleased()
+        testSubscriber.assertError(RuntimeException.class)
+    }
+
+    def "should release the radio when observable returned from RxBleRadioOperationCustom.asObservable() will complete"() {
+        given:
+        def radioOperationCustom = customRadioOperationWithOutcome { Observable.empty() }
+
+        when:
+        objectUnderTest.queue(radioOperationCustom).subscribe(testSubscriber)
+
+        then:
+        flatRadio.semaphore.isReleased()
+        testSubscriber.assertCompleted()
+    }
+
+    def "should throw illegal argument exception if RxBleRadioOperationCustom.asObservable() return null"() {
+        given:
+        def radioOperationCustom = customRadioOperationWithOutcome { null }
+
+        when:
+        objectUnderTest.queue(radioOperationCustom).subscribe(testSubscriber)
+
+        then:
+        flatRadio.semaphore.isReleased()
+        testSubscriber.assertError(IllegalArgumentException.class)
+    }
+
+    public customRadioOperationWithOutcome(Closure<Observable<Boolean>> outcomeSupplier) {
+        new RxBleRadioOperationCustom<Boolean>() {
+            @NonNull
+            @Override
+            Observable<Boolean> asObservable(BluetoothGatt bluetoothGatt,
+                                             RxBleGattCallback rxBleGattCallback,
+                                             Scheduler scheduler) throws Throwable {
+                outcomeSupplier()
+            }
+        }
+    }
+
     public shouldSetupCharacteristicNotificationCorrectly(UUID characteristicUUID, int instanceId) {
         def characteristic = mockCharacteristicWithValue(uuid: characteristicUUID, instanceId: instanceId, value: EMPTY_DATA)
         def descriptor = mockDescriptorAndAttachToCharacteristic(characteristic)
@@ -651,8 +719,7 @@ class RxBleConnectionTest extends GradleRoboSpecification {
 
     public shouldContainOneServiceWithoutCharacteristics() {
         def service = Mock BluetoothGattService
-        shouldGattCallbackReturnServicesOnDiscovery([service])
-        shouldGattContainServices([service])
+        shouldDiscoverServices([service])
         service
     }
 
@@ -685,25 +752,8 @@ class RxBleConnectionTest extends GradleRoboSpecification {
         characteristic
     }
 
-    public shouldGattContainServices(List list) {
-        bluetoothGattMock.getServices() >> list
-    }
-
-    public shouldGattContainNoServices() {
-        shouldGattContainServices(emptyList())
-    }
-
-    public shouldFailStartingDiscovery() {
-        bluetoothGattMock.discoverServices() >> false
-    }
-
-    public shouldSuccessfullyStartDiscovery() {
-        bluetoothGattMock.discoverServices() >> true
-    }
-
-    public shouldGattCallbackReturnServicesOnDiscovery(ArrayList<BluetoothGattService> services) {
-        bluetoothGattMock.discoverServices() >> true
-        gattCallback.getOnServicesDiscovered() >> just(new RxBleDeviceServices(services))
+    public shouldDiscoverServices(ArrayList<BluetoothGattService> services) {
+        mockServiceDiscoveryManager.getDiscoverServicesObservable(_, _) >> just(new RxBleDeviceServices(services))
     }
 
     public shouldFailStartingCharacteristicWrite() {
@@ -734,5 +784,13 @@ class RxBleConnectionTest extends GradleRoboSpecification {
     private static Closure<Observable<Observable<byte[]>>> setupIndicationUuidClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupIndication(characteristic.getUuid()) }
 
     private static Closure<Observable<Observable<byte[]>>> setupIndicationCharacteristicClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupIndication(characteristic) }
+
+    private static Closure<Observable<Observable<byte[]>>> setupNotificationUuidCompatClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupNotification(characteristic.getUuid(), NotificationSetupMode.COMPAT) }
+
+    private static Closure<Observable<Observable<byte[]>>> setupNotificationCharacteristicCompatClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupNotification(characteristic, NotificationSetupMode.COMPAT) }
+
+    private static Closure<Observable<Observable<byte[]>>> setupIndicationUuidCompatClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupIndication(characteristic.getUuid(), NotificationSetupMode.COMPAT) }
+
+    private static Closure<Observable<Observable<byte[]>>> setupIndicationCharacteristicCompatClosure = { RxBleConnection connection, BluetoothGattCharacteristic characteristic -> return connection.setupIndication(characteristic, NotificationSetupMode.COMPAT) }
 
 }

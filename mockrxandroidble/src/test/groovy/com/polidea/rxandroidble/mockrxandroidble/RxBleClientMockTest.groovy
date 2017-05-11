@@ -2,7 +2,6 @@ package com.polidea.rxandroidble.mockrxandroidble
 
 import android.os.Build
 import com.polidea.rxandroidble.RxBleConnection
-import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robospock.RoboSpecification
 import rx.observers.TestSubscriber
@@ -20,26 +19,30 @@ public class RxBleClientMockTest extends RoboSpecification {
     def rxBleClient
     def PublishSubject characteristicNotificationSubject = PublishSubject.create()
 
+    def createDevice(deviceName, macAddress, rssi) {
+        new RxBleClientMock.DeviceBuilder()
+                .deviceMacAddress(macAddress)
+                .deviceName(deviceName)
+                .scanRecord("ScanRecord".getBytes())
+                .rssi(rssi)
+                .notificationSource(characteristicNotifiedUUID, characteristicNotificationSubject)
+                .addService(
+                serviceUUID,
+                new RxBleClientMock.CharacteristicsBuilder()
+                        .addCharacteristic(
+                        characteristicUUID,
+                        characteristicData,
+                        new RxBleClientMock.DescriptorsBuilder()
+                                .addDescriptor(descriptorUUID, descriptorData)
+                                .build()
+                ).build()
+        ).build()
+    }
+
     def setup() {
         rxBleClient = new RxBleClientMock.Builder()
                 .addDevice(
-                new RxBleClientMock.DeviceBuilder()
-                        .deviceMacAddress("AA:BB:CC:DD:EE:FF")
-                        .deviceName("TestDevice")
-                        .scanRecord("ScanRecord".getBytes())
-                        .rssi(42)
-                        .notificationSource(characteristicNotifiedUUID, characteristicNotificationSubject)
-                        .addService(
-                        serviceUUID,
-                        new RxBleClientMock.CharacteristicsBuilder()
-                                .addCharacteristic(
-                                characteristicUUID,
-                                characteristicData,
-                                new RxBleClientMock.DescriptorsBuilder()
-                                        .addDescriptor(descriptorUUID, descriptorData)
-                                        .build()
-                        ).build()
-                ).build()
+                    createDevice("TestDevice", "AA:BB:CC:DD:EE:FF", 42)
         ).build();
     }
 
@@ -107,7 +110,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         rxBleClient.scanBleDevices(null)
                 .take(1)
                 .map { scanResult -> scanResult.getBleDevice() }
-                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(RuntimeEnvironment.application, false) }
+                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(false) }
                 .flatMap { rxBleConnection ->
             rxBleConnection
                     .requestMtu(72)
@@ -118,6 +121,30 @@ public class RxBleClientMockTest extends RoboSpecification {
         testSubscriber.assertValue(72)
     }
 
+    def "should return BluetoothDevices that were added on the fly"() {
+        given:
+        def testNameSubscriber = TestSubscriber.create()
+        def testAddressSubscriber = TestSubscriber.create()
+        def testRssiSubscriber = TestSubscriber.create()
+        def discoverableDevicesSubject = PublishSubject.create()
+        def dynRxBleClient = new RxBleClientMock.Builder()
+                .setDeviceDiscoveryObservable(discoverableDevicesSubject)
+                .build();
+        discoverableDevicesSubject.onNext(createDevice("TestDevice", "AA:BB:CC:DD:EE:FF", 42))
+        discoverableDevicesSubject.onNext(createDevice("SecondDevice", "AA:BB:CC:DD:EE:00", 17))
+
+        when:
+        def scanObservable = dynRxBleClient.scanBleDevices()
+        scanObservable.map { scanResult -> scanResult.getBleDevice().getName() }.subscribe(testNameSubscriber)
+        scanObservable.map { scanResult -> scanResult.getBleDevice().getMacAddress() }.subscribe(testAddressSubscriber)
+        scanObservable.map { scanResult -> scanResult.getRssi() }.subscribe(testRssiSubscriber)
+
+        then:
+        testNameSubscriber.assertValues("TestDevice", "SecondDevice")
+        testAddressSubscriber.assertValues("AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:00")
+        testRssiSubscriber.assertValues(42, 17)
+    }
+
     def "should return services list"() {
         given:
         def testSubscriber = TestSubscriber.create()
@@ -126,7 +153,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         rxBleClient.scanBleDevices(null)
                 .take(1)
                 .map { scanResult -> scanResult.getBleDevice() }
-                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(RuntimeEnvironment.application, false) }
+                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(false) }
                 .flatMap { rxBleConnection ->
             rxBleConnection
                     .discoverServices()
@@ -147,7 +174,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         rxBleClient.scanBleDevices(null)
                 .take(1)
                 .map { scanResult -> scanResult.getBleDevice() }
-                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(RuntimeEnvironment.application, false) }
+                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(false) }
                 .flatMap { rxBleConnection -> rxBleConnection.readCharacteristic(characteristicUUID) }
                 .map { data -> new String(data) }
                 .subscribe(testSubscriber)
@@ -164,7 +191,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         rxBleClient.scanBleDevices(null)
                 .take(1)
                 .map { scanResult -> scanResult.getBleDevice() }
-                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(RuntimeEnvironment.application, false) }
+                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(false) }
                 .flatMap { rxBleConnection -> rxBleConnection.readDescriptor(serviceUUID, characteristicUUID, descriptorUUID) }
                 .map { data -> new String(data) }
                 .subscribe(testSubscriber)
@@ -179,7 +206,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         rxBleClient.scanBleDevices(null)
                 .take(1)
                 .map { scanResult -> scanResult.getBleDevice() }
-                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(RuntimeEnvironment.application, false) }
+                .flatMap { rxBleDevice -> rxBleDevice.establishConnection(false) }
                 .flatMap { rxBleConnection -> rxBleConnection.setupNotification(characteristicNotifiedUUID) }
                 .subscribe { obs -> obs.map { data -> new String(data) } subscribe(testSubscriber) }
 
@@ -197,7 +224,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         device.observeConnectionStateChanges().subscribe(testSubscriber);
 
         when:
-        device.establishConnection(RuntimeEnvironment.application, false).subscribe {}
+        device.establishConnection(false).subscribe {}
 
         then:
         testSubscriber.assertValues(
@@ -211,7 +238,7 @@ public class RxBleClientMockTest extends RoboSpecification {
         def testSubscriber = TestSubscriber.create()
         def device = rxBleClient.getBleDevice("AA:BB:CC:DD:EE:FF")
         device.observeConnectionStateChanges().subscribe(testSubscriber);
-        def subscription = device.establishConnection(RuntimeEnvironment.application, false).subscribe {}
+        def subscription = device.establishConnection(false).subscribe {}
 
         when:
         subscription.unsubscribe()

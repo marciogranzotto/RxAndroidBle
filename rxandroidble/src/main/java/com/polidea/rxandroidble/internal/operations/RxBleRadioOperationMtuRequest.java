@@ -4,59 +4,35 @@ import android.bluetooth.BluetoothGatt;
 import android.os.Build;
 import android.support.annotation.RequiresApi;
 
-import com.polidea.rxandroidble.exceptions.BleGattCannotStartException;
 import com.polidea.rxandroidble.exceptions.BleGattOperationType;
-import com.polidea.rxandroidble.internal.RxBleRadioOperation;
+import com.polidea.rxandroidble.internal.RxBleSingleGattRadioOperation;
 import com.polidea.rxandroidble.internal.connection.RxBleGattCallback;
 
-import java.util.concurrent.TimeUnit;
+import javax.inject.Inject;
 
-import rx.Scheduler;
-import rx.Subscription;
+import rx.Observable;
 
 @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-public class RxBleRadioOperationMtuRequest extends RxBleRadioOperation<Integer> {
-
-    private final RxBleGattCallback rxBleGattCallback;
-
-    private final BluetoothGatt bluetoothGatt;
-
-    private final long timeout;
-
-    private final TimeUnit timeoutTimeUnit;
-
-    private final Scheduler timeoutScheduler;
+public class RxBleRadioOperationMtuRequest extends RxBleSingleGattRadioOperation<Integer> {
 
     private final int mtu;
 
-    public RxBleRadioOperationMtuRequest(
-            int mtu,
+    @Inject
+    RxBleRadioOperationMtuRequest(
             RxBleGattCallback rxBleGattCallback,
             BluetoothGatt bluetoothGatt,
-            long timeout,
-            TimeUnit timeoutTimeUnit,
-            Scheduler timeoutScheduler) {
-        this.mtu = mtu;
-        this.rxBleGattCallback = rxBleGattCallback;
-        this.bluetoothGatt = bluetoothGatt;
-        this.timeout = timeout;
-        this.timeoutTimeUnit = timeoutTimeUnit;
-        this.timeoutScheduler = timeoutScheduler;
+            TimeoutConfiguration timeoutConfiguration, int requestedMtu) {
+        super(bluetoothGatt, rxBleGattCallback, BleGattOperationType.ON_MTU_CHANGED, timeoutConfiguration);
+        mtu = requestedMtu;
     }
 
     @Override
-    protected void protectedRun() {
-        final Subscription subscription = rxBleGattCallback
-                .getOnMtuChanged()
-                .first()
-                .timeout(timeout, timeoutTimeUnit, timeoutScheduler)
-                .doOnTerminate(() -> releaseRadio())
-                .subscribe(getSubscriber());
+    protected Observable<Integer> getCallback(RxBleGattCallback rxBleGattCallback) {
+        return rxBleGattCallback.getOnMtuChanged();
+    }
 
-        boolean success = bluetoothGatt.requestMtu(mtu);
-        if (!success) {
-            subscription.unsubscribe();
-            onError(new BleGattCannotStartException(BleGattOperationType.ON_MTU_CHANGED));
-        }
+    @Override
+    protected boolean startOperation(BluetoothGatt bluetoothGatt) {
+        return bluetoothGatt.requestMtu(mtu);
     }
 }

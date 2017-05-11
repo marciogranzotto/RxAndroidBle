@@ -15,13 +15,16 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rx.Observable;
+import rx.functions.Action0;
+import rx.functions.Action1;
+import rx.functions.Func0;
 import rx.subjects.BehaviorSubject;
 
 import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.CONNECTED;
 import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.CONNECTING;
 import static com.polidea.rxandroidble.RxBleConnection.RxBleConnectionState.DISCONNECTED;
 
-class RxBleDeviceMock implements RxBleDevice {
+public class RxBleDeviceMock implements RxBleDevice {
 
     private RxBleConnection rxBleConnection;
     private BehaviorSubject<RxBleConnection.RxBleConnectionState> connectionStateBehaviorSubject = BehaviorSubject.create(
@@ -55,18 +58,40 @@ class RxBleDeviceMock implements RxBleDevice {
     }
 
     @Override
+    @Deprecated
     public Observable<RxBleConnection> establishConnection(Context context, boolean autoConnect) {
-        return Observable.defer(() -> {
-            if (isConnected.compareAndSet(false, true)) {
-                return emitConnectionWithoutCompleting()
-                        .doOnSubscribe(() -> connectionStateBehaviorSubject.onNext(CONNECTING))
-                        .doOnNext(rxBleConnection -> connectionStateBehaviorSubject.onNext(CONNECTED))
-                        .doOnUnsubscribe(() -> {
-                            connectionStateBehaviorSubject.onNext(DISCONNECTED);
-                            isConnected.set(false);
-                        });
-            } else {
-                return Observable.error(new BleAlreadyConnectedException(macAddress));
+        return establishConnection(autoConnect);
+    }
+
+    @Override
+    public Observable<RxBleConnection> establishConnection(boolean autoConnect) {
+        return Observable.defer(new Func0<Observable<RxBleConnection>>() {
+            @Override
+            public Observable<RxBleConnection> call() {
+                if (isConnected.compareAndSet(false, true)) {
+                    return RxBleDeviceMock.this.emitConnectionWithoutCompleting()
+                            .doOnSubscribe(new Action0() {
+                                @Override
+                                public void call() {
+                                    connectionStateBehaviorSubject.onNext(CONNECTING);
+                                }
+                            })
+                            .doOnNext(new Action1<RxBleConnection>() {
+                                @Override
+                                public void call(RxBleConnection rxBleConnection) {
+                                    connectionStateBehaviorSubject.onNext(CONNECTED);
+                                }
+                            })
+                            .doOnUnsubscribe(new Action0() {
+                                @Override
+                                public void call() {
+                                    connectionStateBehaviorSubject.onNext(DISCONNECTED);
+                                    isConnected.set(false);
+                                }
+                            });
+                } else {
+                    return Observable.error(new BleAlreadyConnectedException(macAddress));
+                }
             }
         });
     }
@@ -91,8 +116,12 @@ class RxBleDeviceMock implements RxBleDevice {
 
     @Override
     public BluetoothDevice getBluetoothDevice() {
-        throw new UnsupportedOperationException("Mock does not support returning a "
-            + "BluetoothDevice.");
+        throw new UnsupportedOperationException("Mock does not support returning a BluetoothDevice.");
+    }
+
+    @Override
+    public Observable<Integer> bond(Context context) {
+        throw new UnsupportedOperationException("Mock does not support bonding.");
     }
 
     @Override

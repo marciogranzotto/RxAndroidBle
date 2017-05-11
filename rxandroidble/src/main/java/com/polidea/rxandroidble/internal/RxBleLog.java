@@ -3,6 +3,8 @@ package com.polidea.rxandroidble.internal;
 import android.support.annotation.IntDef;
 import android.util.Log;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -12,6 +14,7 @@ import java.util.regex.Pattern;
 public class RxBleLog {
 
     @IntDef({VERBOSE, DEBUG, INFO, WARN, ERROR, NONE})
+    @Retention(RetentionPolicy.SOURCE)
     public @interface LogLevel {
 
     }
@@ -24,6 +27,7 @@ public class RxBleLog {
     public static final int NONE = Integer.MAX_VALUE;
     private static final Pattern ANONYMOUS_CLASS = Pattern.compile("\\$\\d+$");
     private static final ThreadLocal<String> NEXT_TAG = new ThreadLocal<>();
+
     private static int logLevel = Integer.MAX_VALUE;
 
     private RxBleLog() {
@@ -133,5 +137,9 @@ public class RxBleLog {
                 Log.println(priority, tag, line);
             }
         }
+    }
+
+    public static boolean isAtLeast(int expectedLogLevel) {
+        return logLevel <= expectedLogLevel;
     }
 }

@@ -3,7 +3,7 @@ package com.polidea.rxandroidble.internal;
 import android.os.DeadObjectException;
 import android.support.annotation.NonNull;
 
-import com.polidea.rxandroidble.exceptions.BleDisconnectedException;
+import com.polidea.rxandroidble.exceptions.BleException;
 import java.util.concurrent.Semaphore;
 
 import rx.Observable;
@@ -43,17 +43,23 @@ public abstract class RxBleRadioOperation<T> implements Runnable, Comparable<RxB
         try {
             protectedRun();
         } catch (DeadObjectException deadObjectException) {
-            onError(new BleDisconnectedException(deadObjectException));
+            onError(provideException(deadObjectException));
         } catch (Throwable throwable) {
             onError(throwable);
         }
     }
 
     /**
-     * This method will be overriden in concrete operation implementations and
+     * This method will be overridden in concrete operation implementations and
      * will contain specific operation logic.
      */
     protected abstract void protectedRun() throws Throwable;
+
+    /**
+     * This function will be overriden in concrete operation implementations to provide an exception with needed context
+     * @param deadObjectException the cause for the exception
+     */
+    protected abstract BleException provideException(DeadObjectException deadObjectException);
 
     /**
      * A convenience method for getting a representation of the Subscriber
@@ -88,8 +94,10 @@ public abstract class RxBleRadioOperation<T> implements Runnable, Comparable<RxB
 
     /**
      * A convenience method for calling the Subscriber's onCompleted()
+     * Calling this method automatically releases the radio -> calls releaseRadio().
      */
     protected final void onCompleted() {
+        releaseRadio();
         replaySubject.onCompleted();
     }
 
